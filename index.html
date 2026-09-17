@@ -221,6 +221,38 @@ canvas { display: block; }
 }
 #safehouse-prompt.locked { color: #f44; text-shadow: 0 0 8px #800; }
 
+/* Flecha de dirección al refugio */
+#sh-arrow {
+  position: absolute;
+  pointer-events: none;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  transform: translate(-50%, -50%);
+}
+#sh-arrow-icon {
+  font-size: 26px;
+  line-height: 1;
+  color: #00ff55;
+  text-shadow: 0 0 12px #00ff55, 0 0 24px #00aa33;
+  filter: drop-shadow(0 0 6px #00ff55);
+  animation: shArrowPulse 1.2s ease-in-out infinite;
+}
+#sh-arrow-icon.used { color: #ff4422; text-shadow: 0 0 12px #ff4422, 0 0 24px #aa2200; filter: drop-shadow(0 0 6px #ff4422); }
+#sh-arrow-dist {
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: #00cc44;
+  margin-top: 1px;
+  text-shadow: 0 0 6px #00aa33;
+  font-family: 'Courier New', monospace;
+}
+#sh-arrow-dist.used { color: #cc3311; }
+@keyframes shArrowPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
 /* Story box */
 #overlay .story-box {
   background: rgba(80,0,0,0.18); border: 1px solid #500;
@@ -602,6 +634,10 @@ canvas { display: block; }
   <div id="killfeed"></div>
   <div id="pickup-msg"></div>
   <div id="safehouse-prompt"></div>
+  <div id="sh-arrow">
+    <div id="sh-arrow-icon">▲</div>
+    <div id="sh-arrow-dist">-- m · REFUGIO</div>
+  </div>
   <div id="zone-label-wrap">
     <div id="zone-label">ZONA ACTUAL</div>
     <div id="zone-name">PLAZA DE ARMAS</div>
@@ -1229,6 +1265,8 @@ let zoneBarrierColliders = []; // sus colliders (para eliminarlos)
 // Safe house
 let safehouseUsedThisWave = false;
 let safehouseDoorLight = null;
+let safehouseSignMat = null;
+let safehouseSignLight = null;
 const SH_BY_SCENARIO = {
   1: { x: -14, z:  10 },  // Santiago Centro — esquina izq-frente
   2: { x: -16, z:  14 },  // Estación Central — lateral izquierdo
@@ -2824,16 +2862,124 @@ function buildSafehouse() {
   const signMesh = new THREE.Mesh(signGeo, signMat2);
   signMesh.position.set(sx, shH - 0.05, sz + 2.6);
   scene.add(signMesh);
+
+  // ── CARTEL FLUORESCENTE ALTO (visible desde lejos) ──
+  const poleMat = new THREE.MeshPhongMaterial({ color: 0x333333, shininess: 20 });
+
+  // Poste principal
+  const poleGeo = new THREE.BoxGeometry(0.18, 9.0, 0.18);
+  const poleMesh = new THREE.Mesh(poleGeo, poleMat);
+  poleMesh.position.set(sx + 3.5, 4.5, sz + 2.6);
+  scene.add(poleMesh);
+
+  // Brazo horizontal que sostiene el cartel
+  const armGeo = new THREE.BoxGeometry(2.8, 0.14, 0.14);
+  const armMesh = new THREE.Mesh(armGeo, poleMat);
+  armMesh.position.set(sx + 2.1, 9.0, sz + 2.6);
+  scene.add(armMesh);
+
+  // Panel del cartel
+  safehouseSignMat = new THREE.MeshBasicMaterial({ color: 0x00ff55 });
+  const panelGeo = new THREE.BoxGeometry(2.6, 0.9, 0.1);
+  const panelMesh = new THREE.Mesh(panelGeo, safehouseSignMat);
+  panelMesh.position.set(sx + 2.1, 9.55, sz + 2.6);
+  scene.add(panelMesh);
+
+  // Marco oscuro del cartel
+  const frameMat = new THREE.MeshPhongMaterial({ color: 0x111111 });
+  const frameGeo = new THREE.BoxGeometry(2.8, 1.05, 0.08);
+  const frameMesh = new THREE.Mesh(frameGeo, frameMat);
+  frameMesh.position.set(sx + 2.1, 9.55, sz + 2.65);
+  scene.add(frameMesh);
+
+  // Cruz de primeros auxilios en el cartel (barra vertical)
+  const crossMatSign = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const crossV = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.60, 0.12), crossMatSign);
+  crossV.position.set(sx + 1.1, 9.55, sz + 2.56);
+  scene.add(crossV);
+  // Cruz barra horizontal
+  const crossH = new THREE.Mesh(new THREE.BoxGeometry(0.60, 0.18, 0.12), crossMatSign);
+  crossH.position.set(sx + 1.1, 9.55, sz + 2.56);
+  scene.add(crossH);
+
+  // Flecha hacia abajo en el cartel (triángulo aproximado con 3 cajas)
+  const arrowMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const arrBody = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.40, 0.12), arrowMat);
+  arrBody.position.set(sx + 2.4, 9.65, sz + 2.56);
+  scene.add(arrBody);
+  const arrL = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.22, 0.12), arrowMat);
+  arrL.rotation.z = Math.PI / 4;
+  arrL.position.set(sx + 2.25, 9.30, sz + 2.56);
+  scene.add(arrL);
+  const arrR = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.22, 0.12), arrowMat);
+  arrR.rotation.z = -Math.PI / 4;
+  arrR.position.set(sx + 2.55, 9.30, sz + 2.56);
+  scene.add(arrR);
+
+  // Luz de neón sobre el cartel (ilumina entorno de verde)
+  safehouseSignLight = new THREE.PointLight(0x00ff55, 0, 22);
+  safehouseSignLight.position.set(sx + 2.1, 10.2, sz + 2.6);
+  scene.add(safehouseSignLight);
 }
 
 function updateSafehouseGlow() {
   if (!safehouseDoorLight) return;
   if (wave < 3) {
     safehouseDoorLight.intensity = 0;
+    if (safehouseSignLight) safehouseSignLight.intensity = 0;
+    if (safehouseSignMat) safehouseSignMat.color.setHex(0x003311);
     return;
   }
-  safehouseDoorLight.color.setHex(safehouseUsedThisWave ? 0xff2200 : 0x00ff44);
-  safehouseDoorLight.intensity = 1.2 + Math.sin(performance.now() * 0.003) * 0.3;
+  const used = safehouseUsedThisWave;
+  const pulse = Math.sin(performance.now() * 0.003) * 0.3;
+  const fastFlicker = Math.sin(performance.now() * 0.012) * 0.15;
+
+  // Luz de puerta
+  safehouseDoorLight.color.setHex(used ? 0xff2200 : 0x00ff44);
+  safehouseDoorLight.intensity = 1.2 + pulse;
+
+  // Cartel alto: pulso más lento + flicker
+  if (safehouseSignLight) {
+    safehouseSignLight.color.setHex(used ? 0xff3300 : 0x00ff55);
+    safehouseSignLight.intensity = used ? (0.6 + pulse * 0.5) : (1.8 + pulse + fastFlicker);
+  }
+  if (safehouseSignMat) {
+    safehouseSignMat.color.setHex(used ? 0xcc2200 : 0x00ff55);
+  }
+}
+
+function updateSafehouseArrow() {
+  const el = document.getElementById('sh-arrow');
+  const icon = document.getElementById('sh-arrow-icon');
+  const distEl = document.getElementById('sh-arrow-dist');
+  const sh = getSH();
+  const dx = sh.x - camera.position.x;
+  const dz = sh.z - camera.position.z;
+  const dist = Math.sqrt(dx * dx + dz * dz);
+
+  // Ocultar si wave < 3 o estamos muy cerca (ya aparece el prompt)
+  if (wave < 3 || dist < 11) { el.style.display = 'none'; return; }
+
+  // Ángulo en espacio cámara: rotamos el vector mundo por la inversa del yaw
+  const θ = camera.rotation.y;
+  const camRelX =  dx * Math.cos(θ) + dz * Math.sin(θ);
+  const camRelZ = -dx * Math.sin(θ) + dz * Math.cos(θ);
+  const angle = Math.atan2(camRelX, -camRelZ); // 0 = adelante (arriba en pantalla)
+
+  // Posición en % de pantalla (radio del 36% desde el centro)
+  const r = 36;
+  const sx2 = 50 + r * Math.sin(angle);
+  const sy2 = 50 - r * Math.cos(angle);
+
+  el.style.display = 'flex';
+  el.style.left = sx2 + '%';
+  el.style.top  = sy2 + '%';
+  el.style.transform = `translate(-50%, -50%) rotate(${angle}rad)`;
+
+  const used = safehouseUsedThisWave;
+  icon.className = used ? 'used' : '';
+  distEl.className = used ? 'used' : '';
+  distEl.textContent = Math.round(dist) + 'm · REFUGIO';
 }
 
 function checkSafehouseProximity() {
@@ -6016,6 +6162,7 @@ function gameLoop() {
   // Safe house
   updateSafehouseGlow();
   checkSafehouseProximity();
+  updateSafehouseArrow();
 
   // Spawn
   if (!waveTransition && zombiesSpawned < zombiesInWave) {
@@ -6180,6 +6327,8 @@ function startGame() {
   espadaSpawnedThisWave = false;
   safehouseUsedThisWave = false;
   safehouseDoorLight = null;
+  safehouseSignMat = null;
+  safehouseSignLight = null;
   collectedClues = []; clueOpen = false; pendingClues = [];
   cluePickups.forEach(p => { scene.remove(p.mesh); scene.remove(p.glow); scene.remove(p.light); });
   cluePickups = [];
@@ -6246,6 +6395,7 @@ function showScenarioTransition() {
   gamePaused = false;
   if (document.pointerLockElement) document.exitPointerLock();
   document.getElementById('hud').style.display = 'none';
+  document.getElementById('sh-arrow').style.display = 'none';
 
   const cur = SCENARIOS[currentScenario] || SCENARIOS[4];
   const nextSc = currentScenario < 4 ? currentScenario + 1 : null;
@@ -6323,6 +6473,7 @@ function endGame() {
   stopAmbience();
   if (document.pointerLockElement) document.exitPointerLock();
   document.getElementById('hud').style.display = 'none';
+  document.getElementById('sh-arrow').style.display = 'none';
   document.getElementById('gameover').style.display = 'flex';
   const _fd = getDiff();
   const _fdEl = document.getElementById('final-diff');
