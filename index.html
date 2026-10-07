@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
@@ -13,7 +13,8 @@ canvas { display: block; }
   position: fixed; inset: 0;
   background: radial-gradient(ellipse at center, #1a0000 0%, #000 100%);
   display: flex; flex-direction: column;
-  align-items: center; justify-content: center;
+  align-items: center; justify-content: safe center;
+  overflow-y: auto;
   color: #fff; z-index: 100;
 }
 #overlay h1 {
@@ -329,6 +330,21 @@ canvas { display: block; }
 .diff-btn[data-d="dificil"].selected   { background: rgba(120,40,0,0.35); box-shadow: 0 0 14px #f60; color: #fa6; }
 .diff-btn[data-d="desquiciado"]{ border-color: #f0f; color: #c6c; font-size: 11px; }
 .diff-btn[data-d="desquiciado"].selected { background: rgba(120,0,120,0.35); box-shadow: 0 0 18px #f0f; color: #f8f; }
+/* Graphics quality selector */
+#gfx-wrap {
+  display: flex; gap: 8px; margin-bottom: 14px; flex-shrink: 0; flex-wrap: wrap; align-items: center; justify-content: center;
+}
+.gfx-label { font-size: 11px; color: #777; letter-spacing: 3px; margin-right: 6px; }
+#overlay .gfx-btn {
+  padding: 6px 14px; font-size: 11px;
+  border: 1px solid #555; cursor: pointer;
+  font-family: 'Courier New', monospace; letter-spacing: 2px;
+  background: rgba(0,0,0,0.5); color: #888;
+  transition: all 0.2s; min-width: 72px;
+}
+#overlay .gfx-btn:hover { opacity: 0.85; box-shadow: none; }
+#overlay .gfx-btn.selected { background: rgba(120,60,0,0.35); border-color: #f60; box-shadow: 0 0 12px #a40; color: #fa6; }
+#gfx-desc { font-size: 11px; color: #777; letter-spacing: 1px; margin-left: 8px; }
 #diff-desc {
   font-size: 12px; color: #888; letter-spacing: 1px;
   margin-bottom: 16px; min-height: 16px; text-align: center;
@@ -512,6 +528,13 @@ canvas { display: block; }
     <button class="diff-btn" data-d="desquiciado" onclick="selectDiff('desquiciado')">DESQUICIADO</button>
   </div>
   <div id="diff-desc">Dificultad normal. Buena cantidad de munición y enemigos moderados.</div>
+  <div id="gfx-wrap">
+    <span class="gfx-label">GRÁFICOS</span>
+    <button class="gfx-btn" data-g="bajo"  onclick="selectGfx('bajo')">BAJO</button>
+    <button class="gfx-btn" data-g="medio" onclick="selectGfx('medio')">MEDIO</button>
+    <button class="gfx-btn" data-g="alto"  onclick="selectGfx('alto')">ALTO</button>
+    <span id="gfx-desc"></span>
+  </div>
   <button id="startBtn" onclick="openMapSelect()">SOBREVIVIR</button>
 </div>
 
@@ -1268,13 +1291,13 @@ let safehouseDoorLight = null;
 let safehouseSignMat = null;
 let safehouseSignLight = null;
 const SH_BY_SCENARIO = {
-  1: { x: -14, z:  10 },  // Santiago Centro — esquina izq-frente
-  2: { x: -16, z:  14 },  // Estación Central — lateral izquierdo
-  3: { x: -12, z:   6 },  // Las Condes/Sanhattan — izquierda
-  4: { x:  16, z:   8 },  // La Moneda — derecha
-  5: { x: -14, z:  12 },  // Calama — esquina izq-frente
-  6: { x: -18, z:   8 },  // Puente Alto — lateral izquierdo
-  7: { x:  12, z:   8 },  // Villarrica — derecha
+  1: { x: -10, z:  9 },   // Santiago Centro — esquina izq-frente
+  2: { x: -10, z:  9 },   // Estación Central — lateral izquierdo
+  3: { x: -10, z:  6 },   // Las Condes/Sanhattan — izquierda
+  4: { x:  10, z:  8 },   // La Moneda — derecha
+  5: { x: -10, z:  9 },   // Calama — esquina izq-frente
+  6: { x: -10, z:  6 },   // Puente Alto — lateral izquierdo
+  7: { x:  10, z:  8 },   // Villarrica — derecha
 };
 function getSH() { return SH_BY_SCENARIO[currentScenario] || SH_BY_SCENARIO[1]; }
 let smokeParticles = [];
@@ -2070,8 +2093,6 @@ function initScene() {
   scene.fog = new THREE.FogExp2(0x180a04, 0.048);
 
   renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   document.body.appendChild(renderer.domElement);
@@ -2082,6 +2103,652 @@ function initScene() {
 
   clock = new THREE.Clock();
   clock.start();
+
+  gfxResize();
+}
+
+// ============================================================
+// GFX — pipeline de imagen, materiales PBR y atmósfera
+// ============================================================
+const GFX_PRESETS = {
+  bajo:  { desc: 'Sin post-procesado ni PBR. Rinde como la versión original.',
+           post: false, pbr: 0, pixelRatio: 1, shadows: false, rays: false, ash: 220, embers: 50,  smoke: 0.5, aniso: 2 },
+  medio: { desc: 'Bloom, tone mapping, relieve y suelo mojado. Recomendado.',
+           post: true,  pbr: 1, pixelRatio: 1, shadows: false, rays: true,  ash: 500, embers: 110, smoke: 0.8, aniso: 4 },
+  alto:  { desc: 'PBR completo con reflejos, sombras del sol y resolución nativa. Exige GPU dedicada.',
+           post: true,  pbr: 2, pixelRatio: 2, shadows: true,  rays: true,  ash: 900, embers: 180, smoke: 1.0, aniso: 8 }
+};
+let gfxQuality = 'medio';
+try { const _q = localStorage.getItem('sz_gfx'); if (GFX_PRESETS[_q]) gfxQuality = _q; } catch (e) {}
+function gfxQ() { return GFX_PRESETS[gfxQuality]; }
+
+function selectGfx(q) {
+  if (!GFX_PRESETS[q]) return;
+  gfxQuality = q;
+  try { localStorage.setItem('sz_gfx', q); } catch (e) {}
+  document.querySelectorAll('.gfx-btn').forEach(b => b.classList.toggle('selected', b.dataset.g === q));
+  const d = document.getElementById('gfx-desc');
+  if (d) d.textContent = GFX_PRESETS[q].desc;
+  if (renderer) gfxResize();
+}
+
+// Ambientación por escenario: dirección/color del sol (o luna), ceniza, brasas y suelo mojado
+const GFX_SCN = {
+  1: { sun: [ 0.59, 0.28, -0.81], sunColor: [1.00, 0.34, 0.12], glow: 1.0,  ash: [0.40, 0.30, 0.25], embers: 1.0,  wet: 0.50 },
+  2: { sun: [-0.45, 0.30, -0.84], sunColor: [1.00, 0.45, 0.16], glow: 0.9,  ash: [0.40, 0.32, 0.26], embers: 0.8,  wet: 0.45 },
+  3: { sun: [ 0.50, 0.55, -0.67], sunColor: [0.55, 0.70, 1.00], glow: 0.55, ash: [0.30, 0.36, 0.45], embers: 0.25, wet: 0.70 },
+  4: { sun: [-0.30, 0.26, -0.92], sunColor: [1.00, 0.25, 0.12], glow: 0.9,  ash: [0.38, 0.26, 0.24], embers: 0.9,  wet: 0.50 },
+  5: { sun: [ 0.60, 0.38, -0.70], sunColor: [1.00, 0.62, 0.30], glow: 1.1,  ash: [0.55, 0.42, 0.28], embers: 0.3,  wet: 0    },
+  6: { sun: [-0.55, 0.50, -0.67], sunColor: [0.70, 0.55, 1.00], glow: 0.5,  ash: [0.34, 0.30, 0.42], embers: 0.5,  wet: 0.60 },
+  7: { sun: [-0.62, 0.42, -0.66], sunColor: [1.00, 0.85, 0.65], glow: 0.8,  ash: [0.60, 0.62, 0.66], embers: 0.6,  wet: 0    }
+};
+
+const gfx = {
+  ready: false, hdr: false, time: 0, hurt: 0,
+  rtScene: null, rtLDR: null, down: [], up: [], rtRays: null,
+  sunDir: new THREE.Vector3(0, 0.4, -1).normalize(),
+  fires: [], flames: [], wetMats: [], dome: null, ash: null, embers: null,
+  pmrem: null, envRT: null
+};
+
+// ── Niebla por altura: más densa a ras de suelo, se abre hacia arriba ──
+THREE.ShaderChunk.fog_pars_vertex = `
+#ifdef USE_FOG
+	varying float fogDepth;
+	varying float vFogY;
+#endif`;
+THREE.ShaderChunk.fog_vertex = `
+#ifdef USE_FOG
+	fogDepth = - mvPosition.z;
+	vFogY = ( modelMatrix * vec4( transformed, 1.0 ) ).y;
+#endif`;
+THREE.ShaderChunk.fog_pars_fragment = `
+#ifdef USE_FOG
+	uniform vec3 fogColor;
+	varying float fogDepth;
+	varying float vFogY;
+	#ifdef FOG_EXP2
+		uniform float fogDensity;
+	#else
+		uniform float fogNear;
+		uniform float fogFar;
+	#endif
+#endif`;
+THREE.ShaderChunk.fog_fragment = `
+#ifdef USE_FOG
+	#ifdef FOG_EXP2
+		float fogH = max( vFogY, 0.0 );
+		float fogD = fogDensity * ( 0.45 + 0.55 * exp( - fogH * 0.09 ) + 0.30 * exp( - fogH * 1.3 ) );
+		float fogFactor = 1.0 - exp( - fogD * fogD * fogDepth * fogDepth );
+	#else
+		float fogFactor = smoothstep( fogNear, fogFar, fogDepth );
+	#endif
+	gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );
+#endif`;
+// Los sprites no tienen "transformed": usan la altura de su centro
+THREE.ShaderLib.sprite.vertexShader = THREE.ShaderLib.sprite.vertexShader.replace(
+  '#include <fog_vertex>',
+  '#ifdef USE_FOG\n\tfogDepth = - mvPosition.z;\n\tvFogY = modelMatrix[ 3 ].y;\n#endif');
+
+// ── Post-procesado: escena HDR → bloom → rayos → tone mapping + viñeta + grano ──
+const GFX_VS = 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4( position.xy, 0.0, 1.0 ); }';
+const GFX_FS_PRE = `
+uniform sampler2D tMap; uniform vec2 texel; uniform float threshold; uniform float knee;
+varying vec2 vUv;
+vec3 pre( vec2 o ){ return min( pow( max( texture2D( tMap, vUv + o * texel ).rgb, 0.0 ), vec3( 2.2 ) ), vec3( 40.0 ) ); }
+float mx( vec3 c ){ return max( c.r, max( c.g, c.b ) ); }
+void main(){
+  vec3 a = pre( vec2( -0.5, -0.5 ) ), b = pre( vec2( 0.5, -0.5 ) ), c = pre( vec2( -0.5, 0.5 ) ), d = pre( vec2( 0.5, 0.5 ) );
+  float wa = 1.0 / ( 1.0 + mx( a ) ), wb = 1.0 / ( 1.0 + mx( b ) ), wc = 1.0 / ( 1.0 + mx( c ) ), wd = 1.0 / ( 1.0 + mx( d ) );
+  vec3 col = ( a * wa + b * wb + c * wc + d * wd ) / ( wa + wb + wc + wd );
+  float l = mx( col );
+  float soft = clamp( l - threshold + knee, 0.0, 2.0 * knee );
+  soft = soft * soft / ( 4.0 * knee + 0.0001 );
+  gl_FragColor = vec4( col * max( soft, l - threshold ) / max( l, 0.0001 ), 1.0 );
+}`;
+const GFX_FS_DOWN = `
+uniform sampler2D tMap; uniform vec2 texel; varying vec2 vUv;
+void main(){
+  vec3 c = texture2D( tMap, vUv ).rgb * 4.0;
+  c += texture2D( tMap, vUv + texel * vec2( -1.0, -1.0 ) ).rgb;
+  c += texture2D( tMap, vUv + texel * vec2(  1.0, -1.0 ) ).rgb;
+  c += texture2D( tMap, vUv + texel * vec2( -1.0,  1.0 ) ).rgb;
+  c += texture2D( tMap, vUv + texel * vec2(  1.0,  1.0 ) ).rgb;
+  gl_FragColor = vec4( c / 8.0, 1.0 );
+}`;
+const GFX_FS_UP = `
+uniform sampler2D tMap; uniform sampler2D tAdd; uniform vec2 texel; varying vec2 vUv;
+void main(){
+  vec3 c = texture2D( tMap, vUv ).rgb * 4.0;
+  c += ( texture2D( tMap, vUv + texel * vec2( -1.0, 0.0 ) ).rgb + texture2D( tMap, vUv + texel * vec2( 1.0, 0.0 ) ).rgb
+       + texture2D( tMap, vUv + texel * vec2( 0.0, -1.0 ) ).rgb + texture2D( tMap, vUv + texel * vec2( 0.0, 1.0 ) ).rgb ) * 2.0;
+  c += texture2D( tMap, vUv + texel * vec2( -1.0, -1.0 ) ).rgb + texture2D( tMap, vUv + texel * vec2( 1.0, -1.0 ) ).rgb
+     + texture2D( tMap, vUv + texel * vec2( -1.0,  1.0 ) ).rgb + texture2D( tMap, vUv + texel * vec2( 1.0,  1.0 ) ).rgb;
+  gl_FragColor = vec4( c / 16.0 + texture2D( tAdd, vUv ).rgb, 1.0 );
+}`;
+const GFX_FS_RAYS = `
+uniform sampler2D tMap; uniform vec2 sunPos; uniform float strength; varying vec2 vUv;
+void main(){
+  vec2 delta = ( sunPos - vUv ) * ( 0.92 / 40.0 );
+  vec2 uv = vUv;
+  float illum = 1.0; vec3 acc = vec3( 0.0 );
+  for ( int i = 0; i < 40; i ++ ) {
+    uv += delta;
+    vec3 c = texture2D( tMap, uv ).rgb;
+    float inside = step( 0.0, uv.x ) * step( uv.x, 1.0 ) * step( 0.0, uv.y ) * step( uv.y, 1.0 );
+    acc += min( c, vec3( 24.0 ) ) * smoothstep( 3.0, 7.0, max( c.r, max( c.g, c.b ) ) ) * illum * inside;
+    illum *= 0.965;
+  }
+  gl_FragColor = vec4( acc * strength / 40.0, 1.0 );
+}`;
+const GFX_FS_FINAL = `
+uniform sampler2D tScene; uniform sampler2D tBloom; uniform sampler2D tRays;
+uniform float uTime, uExposure, uBloom, uRays, uVignette, uAberr, uHurt, uLowHp;
+varying vec2 vUv;
+vec3 aces( vec3 x ){ return clamp( ( x * ( 2.51 * x + 0.03 ) ) / ( x * ( 2.43 * x + 0.59 ) + 0.14 ), 0.0, 1.0 ); }
+void main(){
+  vec2 d = vUv - 0.5;
+  float len = length( d );
+  // aberración cromática: leve en los bordes, fuerte al recibir daño
+  float ca = ( uAberr + uHurt * 0.05 ) * len * len;
+  vec3 col = vec3( texture2D( tScene, vUv + d * ca ).r, texture2D( tScene, vUv ).g, texture2D( tScene, vUv - d * ca ).b );
+  col = pow( max( col, 0.0 ), vec3( 2.2 ) );
+  col += texture2D( tBloom, vUv ).rgb * uBloom + texture2D( tRays, vUv ).rgb * uRays;
+  col *= uExposure * ( 1.0 - uVignette * smoothstep( 0.28, 0.80, len ) );
+  // tone mapping: ACES mezclado con Reinhard para no aplastar las sombras
+  col = mix( col * ( 1.0 + col / 16.0 ) / ( 1.0 + col ), aces( col ), 0.5 );
+  col = pow( col, vec3( 1.0 / 2.2 ) );
+  float luma = dot( col, vec3( 0.299, 0.587, 0.114 ) );
+  float edge = smoothstep( 0.18, 0.72, len );
+  float hurt = ( uHurt * 0.65 + uLowHp * 0.35 * ( 0.7 + 0.3 * sin( uTime * 5.0 ) ) ) * edge;
+  col = mix( col, col * vec3( 1.25, 0.45, 0.40 ) + vec3( 0.14, 0.0, 0.0 ), hurt );
+  col = mix( col, vec3( luma ), uLowHp * 0.4 );
+  gl_FragColor = vec4( col, 1.0 );
+}`;
+// Antialias FXAA sobre la imagen final + grano de película
+const GFX_FS_FXAA = `
+uniform sampler2D tMap; uniform vec2 texel; uniform float uTime, uGrain; varying vec2 vUv;
+float hash( vec2 p ){ p = fract( p * vec2( 123.34, 456.21 ) ); p += dot( p, p + 45.32 ); return fract( p.x * p.y ); }
+void main(){
+  const vec3 L = vec3( 0.299, 0.587, 0.114 );
+  float lNW = dot( texture2D( tMap, vUv + vec2( -1.0, -1.0 ) * texel ).rgb, L );
+  float lNE = dot( texture2D( tMap, vUv + vec2(  1.0, -1.0 ) * texel ).rgb, L );
+  float lSW = dot( texture2D( tMap, vUv + vec2( -1.0,  1.0 ) * texel ).rgb, L );
+  float lSE = dot( texture2D( tMap, vUv + vec2(  1.0,  1.0 ) * texel ).rgb, L );
+  vec3 rgbM = texture2D( tMap, vUv ).rgb;
+  float lM = dot( rgbM, L );
+  float lMin = min( lM, min( min( lNW, lNE ), min( lSW, lSE ) ) );
+  float lMax = max( lM, max( max( lNW, lNE ), max( lSW, lSE ) ) );
+  vec2 dir = vec2( - ( ( lNW + lNE ) - ( lSW + lSE ) ), ( lNW + lSW ) - ( lNE + lSE ) );
+  float reduce = max( ( lNW + lNE + lSW + lSE ) * 0.03125, 0.0078125 );
+  dir = clamp( dir / ( min( abs( dir.x ), abs( dir.y ) ) + reduce ), vec2( -8.0 ), vec2( 8.0 ) ) * texel;
+  vec3 a = 0.5 * ( texture2D( tMap, vUv + dir * ( 1.0 / 3.0 - 0.5 ) ).rgb + texture2D( tMap, vUv + dir * ( 2.0 / 3.0 - 0.5 ) ).rgb );
+  vec3 b = a * 0.5 + 0.25 * ( texture2D( tMap, vUv - dir * 0.5 ).rgb + texture2D( tMap, vUv + dir * 0.5 ).rgb );
+  float lB = dot( b, L );
+  vec3 col = ( lB < lMin || lB > lMax ) ? a : b;
+  col += ( hash( gl_FragCoord.xy + fract( uTime ) * vec2( 917.0, 613.0 ) ) - 0.5 ) * uGrain * ( 1.2 - lM );
+  gl_FragColor = vec4( col, 1.0 );
+}`;
+
+function gfxShader(fs, uniforms) {
+  return new THREE.ShaderMaterial({ uniforms, vertexShader: GFX_VS, fragmentShader: fs, depthTest: false, depthWrite: false });
+}
+
+function gfxInitPost() {
+  gfx.hdr = renderer.capabilities.isWebGL2;
+  gfx.cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute([-1,-1,0, 3,-1,0, -1,3,0], 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute([0,0, 2,0, 0,2], 2));
+  gfx.quad = new THREE.Mesh(geo, null);
+  gfx.quad.frustumCulled = false;
+  gfx.pscene = new THREE.Scene();
+  gfx.pscene.add(gfx.quad);
+  const tx = () => ({ value: new THREE.Vector2() });
+  gfx.mPre   = gfxShader(GFX_FS_PRE,  { tMap: { value: null }, texel: tx(), threshold: { value: 0.42 }, knee: { value: 0.25 } });
+  gfx.mDown  = gfxShader(GFX_FS_DOWN, { tMap: { value: null }, texel: tx() });
+  gfx.mUp    = gfxShader(GFX_FS_UP,   { tMap: { value: null }, tAdd: { value: null }, texel: tx() });
+  gfx.mRays  = gfxShader(GFX_FS_RAYS, { tMap: { value: null }, sunPos: tx(), strength: { value: 0 } });
+  gfx.mFinal = gfxShader(GFX_FS_FINAL, {
+    tScene: { value: null }, tBloom: { value: null }, tRays: { value: null },
+    uTime: { value: 0 }, uExposure: { value: 1.45 }, uBloom: { value: 0.16 }, uRays: { value: 0 },
+    uVignette: { value: 0.55 }, uAberr: { value: 0.006 }, uHurt: { value: 0 }, uLowHp: { value: 0 }
+  });
+  gfx.mFxaa  = gfxShader(GFX_FS_FXAA, { tMap: { value: null }, texel: tx(), uTime: { value: 0 }, uGrain: { value: 0.045 } });
+  gfx.ready = true;
+}
+
+function gfxResize() {
+  const q = gfxQ();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, q.pixelRatio));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  if (!q.post) return;
+  if (!gfx.ready) gfxInitPost();
+  const sz = renderer.getDrawingBufferSize(new THREE.Vector2());
+  let w = Math.max(32, sz.x), h = Math.max(32, sz.y);
+  [gfx.rtScene, gfx.rtRays, gfx.rtLDR].concat(gfx.down, gfx.up).forEach(rt => { if (rt) rt.dispose(); });
+  const opts = { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat,
+                 type: gfx.hdr ? THREE.HalfFloatType : THREE.UnsignedByteType, stencilBuffer: false };
+  gfx.rtScene = new THREE.WebGLRenderTarget(w, h, opts);
+  const o2 = Object.assign({ depthBuffer: false }, opts);
+  gfx.rtLDR = new THREE.WebGLRenderTarget(w, h, Object.assign({}, o2, { type: THREE.UnsignedByteType }));
+  gfx.down = []; gfx.up = [];
+  for (let i = 0; i < 5; i++) {
+    w = Math.max(2, w >> 1); h = Math.max(2, h >> 1);
+    gfx.down.push(new THREE.WebGLRenderTarget(w, h, o2));
+    if (i < 4) gfx.up.push(new THREE.WebGLRenderTarget(w, h, o2));
+  }
+  gfx.rtRays = new THREE.WebGLRenderTarget(gfx.down[1].width, gfx.down[1].height, o2);
+}
+
+function gfxPass(mat, target) {
+  gfx.quad.material = mat;
+  renderer.setRenderTarget(target);
+  renderer.render(gfx.pscene, gfx.cam);
+}
+
+const _gfxV = new THREE.Vector3(), _gfxV2 = new THREE.Vector3(), _gfxSz = new THREE.Vector2();
+function gfxRender() {
+  const q = gfxQ();
+  if (!q.post || !gfx.rtScene) { renderer.setRenderTarget(null); renderer.render(scene, camera); return; }
+  renderer.setRenderTarget(gfx.rtScene);
+  renderer.render(scene, camera);
+
+  // bloom: filtro de brillo + cadena de 5 niveles
+  const N = gfx.down.length;
+  gfx.mPre.uniforms.tMap.value = gfx.rtScene.texture;
+  gfx.mPre.uniforms.texel.value.set(1 / gfx.rtScene.width, 1 / gfx.rtScene.height);
+  gfxPass(gfx.mPre, gfx.down[0]);
+  for (let i = 1; i < N; i++) {
+    gfx.mDown.uniforms.tMap.value = gfx.down[i-1].texture;
+    gfx.mDown.uniforms.texel.value.set(1 / gfx.down[i-1].width, 1 / gfx.down[i-1].height);
+    gfxPass(gfx.mDown, gfx.down[i]);
+  }
+  let src = gfx.down[N-1];
+  for (let i = N - 2; i >= 0; i--) {
+    gfx.mUp.uniforms.tMap.value = src.texture;
+    gfx.mUp.uniforms.texel.value.set(1 / src.width, 1 / src.height);
+    gfx.mUp.uniforms.tAdd.value = gfx.down[i].texture;
+    gfxPass(gfx.mUp, gfx.up[i]);
+    src = gfx.up[i];
+  }
+
+  // rayos de luz desde el sol (solo si está delante de la cámara)
+  let rays = 0;
+  if (q.rays && gfx.hdr && gfx.dome && gfx.dome.parent) {
+    camera.getWorldDirection(_gfxV2);
+    const facing = _gfxV2.dot(gfx.sunDir);
+    if (facing > 0.05) {
+      _gfxV.copy(gfx.sunDir).multiplyScalar(80).add(camera.position).project(camera);
+      const off = Math.max(Math.abs(_gfxV.x), Math.abs(_gfxV.y));
+      rays = Math.min(1, facing / 0.4) * (1 - Math.min(1, Math.max(0, (off - 0.9) / 0.7)));
+      if (rays > 0.01) {
+        gfx.mRays.uniforms.tMap.value = gfx.down[0].texture;
+        gfx.mRays.uniforms.sunPos.value.set(_gfxV.x * 0.5 + 0.5, _gfxV.y * 0.5 + 0.5);
+        gfx.mRays.uniforms.strength.value = rays;
+        gfxPass(gfx.mRays, gfx.rtRays);
+      }
+    }
+  }
+
+  const u = gfx.mFinal.uniforms;
+  u.tScene.value = gfx.rtScene.texture;
+  u.tBloom.value = gfx.up[0].texture;
+  u.tRays.value = gfx.rtRays.texture;
+  u.uRays.value = rays > 0.01 ? 0.07 : 0;
+  u.uTime.value = gfx.time;
+  u.uHurt.value = gfx.hurt;
+  u.uLowHp.value = gameRunning ? Math.max(0, Math.min(1, 1 - health / (maxHealth * 0.3))) : 0;
+  gfxPass(gfx.mFinal, gfx.rtLDR);
+
+  gfx.mFxaa.uniforms.tMap.value = gfx.rtLDR.texture;
+  gfx.mFxaa.uniforms.texel.value.set(1 / gfx.rtLDR.width, 1 / gfx.rtLDR.height);
+  gfx.mFxaa.uniforms.uTime.value = gfx.time;
+  gfxPass(gfx.mFxaa, null);
+}
+
+// ── Materiales PBR: mismos parámetros que MeshPhongMaterial, convertidos a Standard ──
+function gfxMat(p) {
+  p = Object.assign({}, p);
+  const rough = p.roughness, metal = p.metalness, envI = p.envMapIntensity;
+  delete p.roughness; delete p.metalness; delete p.envMapIntensity;
+  const lvl = gfxQ().pbr;
+  if (lvl < 2) {
+    // calidad baja/media: Phong (barato con muchas luces); en media se añade relieve
+    const ph = new THREE.MeshPhongMaterial(p), n1 = lvl === 1 ? gfxNormalFor(ph.map) : null;
+    if (n1) { ph.normalMap = n1; ph.normalScale.set(0.9, 0.9); }
+    return ph;
+  }
+  const sh = p.shininess !== undefined ? p.shininess : 30;
+  const spec = new THREE.Color(p.specular !== undefined ? p.specular : 0x111111);
+  delete p.shininess; delete p.specular;
+  const specL = Math.max(spec.r, spec.g, spec.b);
+  p.roughness = rough !== undefined ? rough : Math.max(0.18, Math.min(1, Math.pow(2 / (sh + 2), 0.25) + 0.08 - specL * 0.25));
+  p.metalness = metal !== undefined ? metal : (sh >= 60 && specL > 0.8 ? 0.85 : 0);
+  const m = new THREE.MeshStandardMaterial(p);
+  m.envMapIntensity = envI !== undefined ? envI : (m.metalness > 0.5 ? 1.0 : 0.35);
+  const nrm = gfxNormalFor(m.map);
+  if (nrm) { m.normalMap = nrm; m.normalScale.set(0.9, 0.9); }
+  return m;
+}
+
+// Mapa de normales derivado de la luminancia de una textura procedural (Sobel)
+function gfxNormalFor(tex) {
+  if (!tex || !tex.image || !tex.image.getContext) return null;
+  if (tex._gfxNormal) return tex._gfxNormal;
+  const w = tex.image.width, h = tex.image.height;
+  if (w < 32 || h < 32) return null;
+  const src = tex.image.getContext('2d').getImageData(0, 0, w, h).data;
+  const H = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) H[i] = (src[i*4] * 0.299 + src[i*4+1] * 0.587 + src[i*4+2] * 0.114) / 255;
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const ctx = c.getContext('2d'), out = ctx.createImageData(w, h), o = out.data, S = 5.0;
+  for (let y = 0; y < h; y++) {
+    const y0 = ((y - 1 + h) % h) * w, y1 = y * w, y2 = ((y + 1) % h) * w;
+    for (let x = 0; x < w; x++) {
+      const x0 = (x - 1 + w) % w, x2 = (x + 1) % w;
+      const dx = (H[y0+x2] + 2*H[y1+x2] + H[y2+x2]) - (H[y0+x0] + 2*H[y1+x0] + H[y2+x0]);
+      const dy = (H[y2+x0] + 2*H[y2+x] + H[y2+x2]) - (H[y0+x0] + 2*H[y0+x] + H[y0+x2]);
+      const nx = -dx * S, ny = dy * S, il = 1 / Math.sqrt(nx*nx + ny*ny + 1), k = (y1 + x) * 4;
+      o[k] = (nx * il * 0.5 + 0.5) * 255; o[k+1] = (ny * il * 0.5 + 0.5) * 255; o[k+2] = (il * 0.5 + 0.5) * 255; o[k+3] = 255;
+    }
+  }
+  ctx.putImageData(out, 0, 0);
+  const nt = new THREE.CanvasTexture(c);
+  nt.wrapS = tex.wrapS; nt.wrapT = tex.wrapT; nt.anisotropy = tex.anisotropy;
+  tex._gfxNormal = nt;
+  return nt;
+}
+
+// Ruido periódico (teselable) para charcos, humo, etc.
+function gfxNoiseCanvas(size, cells, octaves) {
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const ctx = c.getContext('2d'), img = ctx.createImageData(size, size), d = img.data;
+  const grids = [];
+  for (let o = 0; o < octaves; o++) {
+    const n = cells << o, g = new Float32Array(n * n);
+    for (let i = 0; i < n * n; i++) g[i] = Math.random();
+    grids.push({ n, g });
+  }
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    let v = 0, amp = 0.5, tot = 0;
+    for (let o = 0; o < octaves; o++) {
+      const { n, g } = grids[o], fx = x / size * n, fy = y / size * n;
+      const ix = Math.floor(fx), iy = Math.floor(fy), tx = fx - ix, ty = fy - iy;
+      const sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
+      const a = g[iy * n + ix], b = g[iy * n + (ix + 1) % n], cc = g[((iy + 1) % n) * n + ix], dd = g[((iy + 1) % n) * n + (ix + 1) % n];
+      v += (a + (b - a) * sx + (cc - a) * sy + (a - b - cc + dd) * sx * sy) * amp; tot += amp; amp *= 0.5;
+    }
+    const k = (y * size + x) * 4, val = v / tot * 255;
+    d[k] = d[k+1] = d[k+2] = val; d[k+3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+let _gfxWetTex = null;
+function gfxWet(mat, amount) {
+  if (!mat.isMeshStandardMaterial || mat.userData.gfxWet) return;
+  mat.userData.gfxWet = true;
+  gfx.wetMats.push(mat);
+  if (!_gfxWetTex) {
+    _gfxWetTex = new THREE.CanvasTexture(gfxNoiseCanvas(256, 4, 4));
+    _gfxWetTex.wrapS = _gfxWetTex.wrapT = THREE.RepeatWrapping;
+  }
+  mat.envMapIntensity = 1.0;
+  mat.onBeforeCompile = sh => {
+    sh.uniforms.tWet = { value: _gfxWetTex };
+    sh.uniforms.uWet = { value: amount };
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec2 vWetPos;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWetPos = ( modelMatrix * vec4( transformed, 1.0 ) ).xz;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec2 vWetPos;\nuniform sampler2D tWet;\nuniform float uWet;')
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+	float wetN = texture2D( tWet, vWetPos * 0.045 ).r * 0.7 + texture2D( tWet, vWetPos * 0.19 + 0.37 ).r * 0.3;
+	float wetT = 0.22 + uWet * 0.42;
+	float wetK = 1.0 - smoothstep( wetT - 0.05, wetT + 0.05, wetN );
+	roughnessFactor = mix( roughnessFactor * ( 1.0 - 0.3 * uWet ), 0.14, wetK );
+	diffuseColor.rgb *= mix( 1.0, 0.5, wetK );`)
+      .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\n\tnormal = normalize( mix( normal, geometryNormal, wetK * 0.94 ) );');
+  };
+  mat.customProgramCacheKey = () => 'gfxWet';
+}
+
+// Reflejos: mapa de entorno capturado de la propia escena (cielo, edificios, fuegos)
+function gfxBuildEnv() {
+  if (!gfxQ().pbr) { scene.environment = null; return; }
+  if (!gfx.pmrem) gfx.pmrem = new THREE.PMREMGenerator(renderer);
+  const old = gfx.envRT, vis = camera.visible;
+  camera.visible = false;
+  scene.environment = null;
+  // El destino PMREM va codificado en RGBE: cualquier objeto con mezcla (aditiva o alfa)
+  // lo corrompe, así que se ocultan y el sol entra como una esfera opaca.
+  const hidden = [];
+  scene.traverse(o => {
+    if (o.visible && o.material && (o.material.transparent || o.isSprite || o.isPoints)) { o.visible = false; hidden.push(o); }
+  });
+  const sc = GFX_SCN[currentScenario] || GFX_SCN[1];
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(4, 12, 8), new THREE.MeshBasicMaterial({ fog: false }));
+  ball.material.color.setRGB(sc.sunColor[0] * 12, sc.sunColor[1] * 12, sc.sunColor[2] * 12);
+  ball.position.copy(gfx.sunDir).multiplyScalar(90).add(camera.position);
+  scene.add(ball);
+  scene.position.y = -1.7; scene.updateMatrixWorld(true);
+  gfx.envRT = gfx.pmrem.fromScene(scene, 0, 0.1, 100);
+  scene.position.y = 0; scene.updateMatrixWorld(true);
+  scene.remove(ball); ball.geometry.dispose(); ball.material.dispose();
+  hidden.forEach(o => { o.visible = true; });
+  camera.visible = vis;
+  // PBR completo: toda la escena refleja el entorno; calidad media: solo los suelos mojados
+  if (gfxQ().pbr === 2) scene.environment = gfx.envRT.texture;
+  else gfx.wetMats.forEach(m => { m.envMap = gfx.envRT.texture; m.needsUpdate = true; });
+  if (old) old.dispose();
+}
+
+// ── Atmósfera: sol/luna, ceniza, brasas y llamas ──
+function gfxSpriteTex(key, w, h, fn) {
+  if (!gfx[key]) {
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    fn(c.getContext('2d'), w, h);
+    gfx[key] = new THREE.CanvasTexture(c);
+  }
+  return gfx[key];
+}
+function gfxBlob(ctx, x, y, r, a) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, `rgba(255,255,255,${a})`); g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+}
+function gfxSmokeTex() {
+  return gfxSpriteTex('texSmoke', 128, 128, ctx => {
+    gfxBlob(ctx, 64, 64, 46, 0.55);
+    for (let i = 0; i < 9; i++) {
+      const a = Math.random() * 6.28, r = 12 + Math.random() * 22;
+      gfxBlob(ctx, 64 + Math.cos(a) * r, 64 + Math.sin(a) * r, 16 + Math.random() * 18, 0.35);
+    }
+  });
+}
+function gfxFlameTex() {
+  return gfxSpriteTex('texFlame', 64, 128, ctx => {
+    gfxBlob(ctx, 32, 98, 30, 1.0); gfxBlob(ctx, 32, 72, 24, 0.8);
+    gfxBlob(ctx, 32, 48, 16, 0.6); gfxBlob(ctx, 32, 28, 9, 0.4);
+  });
+}
+
+function gfxMakeDome() {
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { sunDir: { value: gfx.sunDir }, sunColor: { value: new THREE.Vector3(1, 0.4, 0.15) }, glow: { value: 1 } },
+    vertexShader: 'varying vec3 vDir; void main(){ vDir = position; gl_Position = ( projectionMatrix * modelViewMatrix * vec4( position, 1.0 ) ).xyww; }',
+    fragmentShader: `
+uniform vec3 sunDir; uniform vec3 sunColor; uniform float glow; varying vec3 vDir;
+void main(){
+  vec3 dir = normalize( vDir );
+  float ang = acos( clamp( dot( dir, sunDir ), -1.0, 1.0 ) );
+  float core = ( 1.0 - smoothstep( 0.035, 0.055, ang ) ) * 5.0;
+  float halo = exp( - ang * ang / 0.016 ) * 0.9 + exp( - ang / 0.32 ) * 0.30;
+  gl_FragColor = vec4( sunColor * ( core + halo * glow ) * smoothstep( -0.06, 0.03, dir.y ), 1.0 );
+}`,
+    side: THREE.BackSide, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, fog: false
+  });
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), mat);
+  dome.frustumCulled = false; dome.renderOrder = -5;
+  return dome;
+}
+
+function gfxMakeParticles(count, box, additive) {
+  const pos = new Float32Array(count * 3), seed = new Float32Array(count * 4);
+  for (let i = 0; i < count * 3; i++) pos[i] = Math.random();
+  for (let i = 0; i < count * 4; i++) seed[i] = Math.random();
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('aSeed', new THREE.BufferAttribute(seed, 4));
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 }, uCam: { value: new THREE.Vector3() }, uBox: { value: new THREE.Vector3(box[0], box[1], box[2]) },
+      uWind: { value: new THREE.Vector3() }, uSize: { value: 0.04 }, uScale: { value: 500 },
+      uColor: { value: new THREE.Vector3(1, 1, 1) }, uOpacity: { value: 1 }, uFlicker: { value: 0 }
+    },
+    vertexShader: `
+uniform float uTime, uSize, uScale, uFlicker; uniform vec3 uCam, uBox, uWind;
+attribute vec4 aSeed; varying float vAlpha;
+void main(){
+  vec3 p = position * uBox + uWind * uTime * ( 0.6 + aSeed.x * 0.8 );
+  p.x += sin( uTime * 0.7 + aSeed.y * 6.28 ) * 0.35;
+  p.z += cos( uTime * 0.5 + aSeed.z * 6.28 ) * 0.35;
+  p = mod( p - uCam + uBox * 0.5, uBox ) - uBox * 0.5 + uCam;
+  vec4 mv = viewMatrix * vec4( p, 1.0 );
+  gl_Position = projectionMatrix * mv;
+  float dist = - mv.z;
+  gl_PointSize = uSize * ( 0.5 + aSeed.w ) * uScale / max( dist, 0.1 );
+  vAlpha = ( 1.0 - smoothstep( uBox.x * 0.3, uBox.x * 0.5, length( p.xz - uCam.xz ) ) ) * smoothstep( 0.3, 1.5, dist ) * smoothstep( 0.0, 0.4, p.y );
+  vAlpha *= mix( 1.0, 0.45 + 0.55 * sin( uTime * ( 4.0 + aSeed.x * 9.0 ) + aSeed.y * 40.0 ), uFlicker );
+}`,
+    fragmentShader: `
+uniform vec3 uColor; uniform float uOpacity; varying float vAlpha;
+void main(){
+  float a = ( 1.0 - smoothstep( 0.12, 0.5, length( gl_PointCoord - 0.5 ) ) ) * vAlpha * uOpacity;
+  if ( a < 0.004 ) discard;
+  gl_FragColor = vec4( uColor, a );
+}`,
+    transparent: true, depthWrite: false, blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending
+  });
+  const pts = new THREE.Points(geo, mat);
+  pts.frustumCulled = false;
+  pts.userData.count = count;
+  return pts;
+}
+
+// Se llama tras buildMap() + setupLighting(): aplica ambientación del escenario activo
+function gfxAfterBuild() {
+  const q = gfxQ(), sc = GFX_SCN[currentScenario] || GFX_SCN[1];
+  gfx.sunDir.set(sc.sun[0], sc.sun[1], sc.sun[2]).normalize();
+
+  let sun = null;
+  gfx.wetMats = [];
+  scene.traverse(o => {
+    if (o.isDirectionalLight && !sun) sun = o;
+    if (!o.isMesh) return;
+    const g = o.geometry, gp = g.parameters || {};
+    // cúpulas de cielo: detrás de todo, sin escribir profundidad
+    if (g.type === 'SphereGeometry' && gp.radius >= 60 && o.material.side === THREE.BackSide) {
+      o.material.depthWrite = false; o.renderOrder = -10;
+    }
+    // suelos grandes: charcos y reflejos
+    if (q.pbr && sc.wet > 0 && g.type === 'PlaneGeometry' && gp.width >= 14 && Math.abs(o.rotation.x + Math.PI / 2) < 0.01) {
+      // en calidad media el suelo es el único material PBR de la escena
+      if (o.material.isMeshPhongMaterial) {
+        const old = o.material;
+        o.material = new THREE.MeshStandardMaterial({ map: old.map, color: old.color, normalMap: old.normalMap, roughness: 0.8, metalness: 0 });
+      }
+      gfxWet(o.material, sc.wet);
+    }
+  });
+
+  // luz principal alineada con el sol visible; sombras largas en calidad alta
+  if (sun) {
+    const elev = Math.max(0.2, sun.position.clone().normalize().y);
+    sun.intensity *= Math.min(1.8, elev / gfx.sunDir.y);
+    sun.position.copy(gfx.sunDir).multiplyScalar(50);
+    if (q.shadows) sun.castShadow = true;
+    if (sun.castShadow) {
+      const s = sun.shadow, c = s.camera;
+      s.mapSize.set(2048, 2048);
+      c.left = -32; c.right = 32; c.top = 32; c.bottom = -32; c.near = 1; c.far = 130;
+      c.updateProjectionMatrix();
+      s.bias = -0.0005; s.normalBias = 0.05;
+    }
+  }
+
+  // fuegos: llamas visibles sobre cada luz de fuego (se fusionan las que están juntas)
+  gfx.flames.forEach(f => f.sprite.material.dispose());
+  gfx.flames = []; gfx.fires = [];
+  flickerLights.forEach(l => {
+    const c = l.color;
+    l._isFire = l._flickerSpeed >= 4 && c.r > c.g && c.g > c.b;
+    if (!l._isFire) return;
+    l._basePos = l.position.clone();
+    const p = l.position, near = gfx.fires.find(f => Math.hypot(f.x - p.x, f.z - p.z) < 1.6);
+    if (near) { near.power = Math.max(near.power, l._baseIntensity); return; }
+    gfx.fires.push({ x: p.x, y: Math.max(p.y + 0.3, 1.5), z: p.z, power: l._baseIntensity, h: 1 });
+  });
+  gfx.fires.forEach(f => {
+    f.h = 0.5 + Math.min(0.8, f.power * 0.3);
+    for (let i = 0; i < 3; i++) {
+      const mat = new THREE.SpriteMaterial({ map: gfxFlameTex(), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+      mat.color.setRGB(1.5, 0.55 + i * 0.08, 0.14);
+      const sp = new THREE.Sprite(mat);
+      sp.center.set(0.5, 0.06);
+      sp.position.set(f.x + (i - 1) * 0.28, f.y - 0.25, f.z + (i === 1 ? 0.2 : -0.1));
+      scene.add(sp);
+      gfx.flames.push({ sprite: sp, w: f.h * (0.45 + Math.random() * 0.2), h: f.h * (0.8 + Math.random() * 0.4), speed: 5 + Math.random() * 4, phase: Math.random() * 10 });
+    }
+  });
+
+  // sol / luna
+  if (!gfx.dome) gfx.dome = gfxMakeDome();
+  gfx.dome.material.uniforms.sunColor.value.set(sc.sunColor[0], sc.sunColor[1], sc.sunColor[2]);
+  gfx.dome.material.uniforms.glow.value = sc.glow;
+  scene.add(gfx.dome);
+
+  // ceniza y brasas
+  const nEmb = Math.round(q.embers * sc.embers);
+  if (!gfx.ash || gfx.ash.userData.count !== q.ash) {
+    if (gfx.ash) { gfx.ash.geometry.dispose(); gfx.ash.material.dispose(); }
+    gfx.ash = gfxMakeParticles(q.ash, [34, 14, 34], false);
+  }
+  if (!gfx.embers || gfx.embers.userData.count !== nEmb) {
+    if (gfx.embers) { gfx.embers.geometry.dispose(); gfx.embers.material.dispose(); }
+    gfx.embers = gfxMakeParticles(Math.max(1, nEmb), [26, 9, 26], true);
+  }
+  let u = gfx.ash.material.uniforms;
+  u.uColor.value.set(sc.ash[0], sc.ash[1], sc.ash[2]); u.uOpacity.value = 0.7;
+  u.uWind.value.set(0.45, -0.38, 0.18); u.uSize.value = 0.035;
+  u = gfx.embers.material.uniforms;
+  u.uColor.value.set(2.6, 0.95, 0.22); u.uOpacity.value = 0.95; u.uFlicker.value = 1;
+  u.uWind.value.set(0.35, 0.85, 0.12); u.uSize.value = 0.028;
+  scene.add(gfx.ash); scene.add(gfx.embers);
+
+  gfxUpdate(0);
+  gfxBuildEnv();
+}
+
+function gfxUpdate(dt) {
+  gfx.time += dt;
+  gfx.hurt = Math.max(0, gfx.hurt - dt * 2.2);
+  if (gfx.dome) gfx.dome.position.copy(camera.position);
+  const scale = renderer.getDrawingBufferSize(_gfxSz).y / (2 * Math.tan(camera.fov * Math.PI / 360));
+  [gfx.ash, gfx.embers].forEach(p => {
+    if (!p) return;
+    const u = p.material.uniforms;
+    u.uTime.value = gfx.time; u.uCam.value.copy(camera.position); u.uScale.value = scale;
+  });
+  for (let i = 0; i < gfx.flames.length; i++) {
+    const f = gfx.flames[i], t = gfx.time * f.speed + f.phase;
+    const n = Math.sin(t) * 0.5 + Math.sin(t * 2.3 + 1.7) * 0.3 + Math.sin(t * 5.1) * 0.2;
+    f.sprite.scale.set(f.w * (1 + 0.14 * Math.sin(t * 1.7)), f.h * (1 + 0.28 * n), 1);
+    f.sprite.material.rotation = 0.12 * Math.sin(t * 0.9);
+    f.sprite.material.opacity = 0.7 + 0.2 * n;
+  }
 }
 
 // ============================================================
@@ -2095,6 +2762,7 @@ function makeTex(key, w, h, fn) {
   const ctx = c.getContext('2d'); fn(ctx, w, h);
   const t = new THREE.CanvasTexture(c);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = Math.min(gfxQ().aniso, renderer.capabilities.getMaxAnisotropy());
   _texCache[key] = t; return t;
 }
 
@@ -2418,7 +3086,7 @@ function buildScenario1() {
   const BIG = 18;
 
   // ── SUELO con textura de asfalto ──
-  const floorMat = new THREE.MeshPhongMaterial({
+  const floorMat = gfxMat({
     map: asphaltTex(), color: 0xffffff,
     shininess: 4, specular: new THREE.Color(0x111111)
   });
@@ -2429,13 +3097,13 @@ function buildScenario1() {
   scene.add(floor);
 
   // Materiales con textura
-  const concMat  = new THREE.MeshPhongMaterial({ map: concreteTex(), shininess: 2 });
+  const concMat  = gfxMat({ map: concreteTex(), shininess: 2 });
   concMat.map.repeat.set(3, 2);
-  const rubMat   = new THREE.MeshPhongMaterial({ map: rubbleTex(),   shininess: 1 });
+  const rubMat   = gfxMat({ map: rubbleTex(),   shininess: 1 });
   rubMat.map.repeat.set(2, 2);
-  const metMat   = new THREE.MeshPhongMaterial({ map: metalBurnTex(), shininess: 8, specular: new THREE.Color(0x222222) });
+  const metMat   = gfxMat({ map: metalBurnTex(), shininess: 8, specular: new THREE.Color(0x222222) });
   metMat.map.repeat.set(2, 2);
-  const glassMat = new THREE.MeshPhongMaterial({ color: 0x050908, shininess: 30, specular: new THREE.Color(0x334433) });
+  const glassMat = gfxMat({ color: 0x050908, shininess: 30, specular: new THREE.Color(0x334433) });
 
   // Función para crear fachada de edificio detallada
   function buildFacade(x, z, w, h, d, floors, wpf, dmgLevel, rotY) {
@@ -2443,7 +3111,7 @@ function buildScenario1() {
     // Cuerpo principal con textura de ventanas
     const facTex = windowFacadeTex(floors, wpf, dmgLevel);
     facTex.repeat.set(1, 1);
-    const facMat = new THREE.MeshPhongMaterial({ map: facTex, shininess: 3 });
+    const facMat = gfxMat({ map: facTex, shininess: 3 });
     const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), facMat);
     body.position.set(x, h/2, z);
     body.rotation.y = rotY;
@@ -2452,7 +3120,7 @@ function buildScenario1() {
     colliders.push({ minX: x-w/2, maxX: x+w/2, minZ: z-d/2, maxZ: z+d/2 });
 
     // Cornisa superior (borde horizontal)
-    const cornMat = new THREE.MeshPhongMaterial({ map: concreteTex(), shininess: 2 });
+    const cornMat = gfxMat({ map: concreteTex(), shininess: 2 });
     cornMat.map.repeat.set(2,1);
     const corn = new THREE.Mesh(new THREE.BoxGeometry(w+0.3, 0.25, d+0.3), cornMat);
     corn.position.set(x, h+0.12, z); corn.rotation.y = rotY;
@@ -2530,7 +3198,7 @@ function buildScenario1() {
   [[10,-10],[14,-10],[10,-14],[14,-14]].forEach(([cx,cz]) => {
     addBox(cx, cz, 0.60, 5.0, 0.60, concMat);
     // capitel de columna
-    const capMat2 = new THREE.MeshPhongMaterial({ map: concreteTex(), shininess: 2 });
+    const capMat2 = gfxMat({ map: concreteTex(), shininess: 2 });
     capMat2.map.repeat.set(1,1);
     const cap = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.2, 0.85), capMat2);
     cap.position.set(cx, 5.1, cz); scene.add(cap);
@@ -2542,7 +3210,7 @@ function buildScenario1() {
   addBox(0, 0, 2.0, 3.2, 2.0, concMat);
   addBox(0, 0, 0.9, 2.8, 0.9, concMat, 3.4);
   // Torso derrumbado
-  const torsoMat2 = new THREE.MeshPhongMaterial({ map: concreteTex(), shininess: 2 });
+  const torsoMat2 = gfxMat({ map: concreteTex(), shininess: 2 });
   torsoMat2.map.repeat.set(1,1);
   const torso = new THREE.Mesh(new THREE.BoxGeometry(0.8, 2.0, 0.8), torsoMat2);
   torso.position.set(0.3, 4.8, 0.2); torso.rotation.z = 0.9; torso.rotation.x = 0.3;
@@ -2551,7 +3219,7 @@ function buildScenario1() {
   [[-4,-3],[4,-3],[-4,3],[4,3]].forEach(([bx,bz]) => {
     addBox(bx, bz, 2.0, 0.5, 0.45, concMat, 0.5);
     // pata de la banca
-    const legMat2 = new THREE.MeshPhongMaterial({ map: concreteTex(), shininess: 2 });
+    const legMat2 = gfxMat({ map: concreteTex(), shininess: 2 });
     legMat2.map.repeat.set(1,1);
     const leg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.4, 0.12), legMat2);
     leg.position.set(bx+0.7, 0.2, bz); scene.add(leg);
@@ -2563,7 +3231,7 @@ function buildScenario1() {
   addBox(-6, -5,  2.5, 1.2, 2.0, rubMat, 0.6);
   addBox( 6,  5,  1.8, 1.4, 2.2, rubMat, 0.7);
   // Baldosas de la plaza — piso de concreto diferenciado
-  const plazaMat = new THREE.MeshPhongMaterial({ map: concreteTex(), shininess: 5 });
+  const plazaMat = gfxMat({ map: concreteTex(), shininess: 5 });
   plazaMat.map.repeat.set(4, 4);
   const plazaFloor = new THREE.Mesh(new THREE.PlaneGeometry(14, 14), plazaMat);
   plazaFloor.rotation.x = -Math.PI/2; plazaFloor.position.set(0, 0.01, 0);
@@ -2584,7 +3252,7 @@ function buildScenario1() {
     scene.add(wind);
     // ruedas (cilindros simulados con boxes oscuros)
     [[-0.95,0.28,1.4],[0.95,0.28,1.4],[-0.95,0.28,-1.4],[0.95,0.28,-1.4]].forEach(([wx,wy,wz])=>{
-      const wheel = new THREE.Mesh(new THREE.BoxGeometry(0.22,0.5,0.5), new THREE.MeshPhongMaterial({color:0x080808}));
+      const wheel = new THREE.Mesh(new THREE.BoxGeometry(0.22,0.5,0.5), gfxMat({color:0x080808}));
       const angle = ry;
       wheel.position.set(cx+wx*Math.cos(angle)-wz*Math.sin(angle), wy, cz+wx*Math.sin(angle)+wz*Math.cos(angle));
       wheel.rotation.y=ry; scene.add(wheel);
@@ -2607,7 +3275,7 @@ function buildScenario1() {
   addCar( 6, 13,  0.85);
 
   // ── AUTOBÚS MICRO VOLCADO ──
-  const busMat = new THREE.MeshPhongMaterial({ map: metalBurnTex(), shininess:6 });
+  const busMat = gfxMat({ map: metalBurnTex(), shininess:6 });
   busMat.map.repeat.set(2,2);
   addBox(-5, 6, 11.5, 1.8, 2.8, busMat, 0.9);
   // ventanas del bus (glassMat)
@@ -2630,7 +3298,7 @@ function buildScenario1() {
 
   // ── MACETEROS DESTRUIDOS (típicos de Santiago) ──
   [[-8,-8],[8,-8],[-8,8],[8,8],[0,12],[12,0]].forEach(([mx,mz])=>{
-    const potMat2=new THREE.MeshPhongMaterial({map:concreteTex(),shininess:3});
+    const potMat2=gfxMat({map:concreteTex(),shininess:3});
     potMat2.map.repeat.set(1,1);
     const pot=new THREE.Mesh(new THREE.BoxGeometry(0.7,0.55,0.7),potMat2);
     pot.position.set(mx,0.28,mz); pot.castShadow=true; scene.add(pot);
@@ -2647,9 +3315,9 @@ function buildScenario1() {
   });
 
   // ── SKYLINE DE SANTIAGO (decorativo) ──
-  const skyMat  = new THREE.MeshPhongMaterial({ map: windowFacadeTex(12,5,0.5), shininess:1 });
+  const skyMat  = gfxMat({ map: windowFacadeTex(12,5,0.5), shininess:1 });
   skyMat.map.repeat.set(1,1);
-  const skyMat2 = new THREE.MeshPhongMaterial({ map: windowFacadeTex(8,3,0.7), shininess:1 });
+  const skyMat2 = gfxMat({ map: windowFacadeTex(8,3,0.7), shininess:1 });
   skyMat2.map.repeat.set(1,1);
   const mtnMat  = new THREE.MeshLambertMaterial({ color: 0x0e1012 });
 
@@ -2676,6 +3344,7 @@ function buildScenario1() {
   new THREE.TextureLoader().load('world-assets/panorama.jpg', function(tex) {
     tex.mapping = THREE.EquirectangularReflectionMapping;
     scene.background = tex;
+    gfxBuildEnv();
   }, undefined, function() {
     scene.background = new THREE.Color(0x2a0a00);
   });
@@ -2696,7 +3365,7 @@ function buildScenario1() {
 
   // ── BARRERAS DE ZONA (se desbloquean con las oleadas) ──
   function addBarrier(x, z, w, h, d, zoneNeeded) {
-    const mat = new THREE.MeshPhongMaterial({ color: 0x1a1410, map: concreteTex() });
+    const mat = gfxMat({ color: 0x1a1410, map: concreteTex() });
     mat.map.repeat.set(2,1);
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     mesh.position.set(x, h/2, z);
@@ -2748,8 +3417,8 @@ function buildScenario1() {
   [[-3,-3,4.2],[3,-3,4.5],[-3,3,4.2],[3,3,4.5],[-5,0,4.8],[5,0,4.4],[0,5,4.6],[0,-5,4.6]].forEach(([x,z,h])=>addPalm(x,z,h));
 
   // ── TORRES/DOMOS DE LA CATEDRAL METROPOLITANA (Oeste) ──
-  const domeMat = new THREE.MeshPhongMaterial({ color: 0x1a1a20, shininess: 8 });
-  const towerMat = new THREE.MeshPhongMaterial({ map: concreteTex(), shininess: 3 });
+  const domeMat = gfxMat({ color: 0x1a1a20, shininess: 8 });
+  const towerMat = gfxMat({ map: concreteTex(), shininess: 3 });
   towerMat.map.repeat.set(1,2);
   function addCathedralTower(tx, tz) {
     // cuerpo de la torre
@@ -2778,7 +3447,7 @@ function buildScenario1() {
   addCathedralTower(-16.5,  3);
 
   // ── EDIFICIO DE CORREOS al fondo (edificio alto moderno que se ve en la referencia) ──
-  const correosMat = new THREE.MeshPhongMaterial({ map: windowFacadeTex(14, 5, 0.3), shininess: 4 });
+  const correosMat = gfxMat({ map: windowFacadeTex(14, 5, 0.3), shininess: 4 });
   correosMat.map.repeat.set(1, 1);
   const correos = new THREE.Mesh(new THREE.BoxGeometry(8, 32, 8), correosMat);
   correos.position.set(-20, 16, -30); scene.add(correos);
@@ -2800,11 +3469,11 @@ function buildSafehouse() {
   const { x: sx, z: sz } = getSH();
   const shH = 3.5, doorW = 2.0;
 
-  const wallMat = new THREE.MeshPhongMaterial({ color: 0x2a2018, shininess: 2 });
-  const roofMat = new THREE.MeshPhongMaterial({ color: 0x1a140c, shininess: 1 });
-  const doorFrameMat = new THREE.MeshPhongMaterial({ color: 0x4a3820, shininess: 4 });
+  const wallMat = gfxMat({ color: 0x2a2018, shininess: 2 });
+  const roofMat = gfxMat({ color: 0x1a140c, shininess: 1 });
+  const doorFrameMat = gfxMat({ color: 0x4a3820, shininess: 4 });
   const crossMat = new THREE.MeshBasicMaterial({ color: 0xff2222 });
-  const crateMatSH = new THREE.MeshPhongMaterial({ color: 0x5a4020, shininess: 3 });
+  const crateMatSH = gfxMat({ color: 0x5a4020, shininess: 3 });
 
   function shWall(x, z, w, h, d) {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wallMat);
@@ -2845,7 +3514,7 @@ function buildSafehouse() {
   // Suelo interior (ligeramente diferente)
   const floorSH = new THREE.Mesh(
     new THREE.PlaneGeometry(5.0, 5.0),
-    new THREE.MeshPhongMaterial({ color: 0x1a1008, shininess: 1 })
+    gfxMat({ color: 0x1a1008, shininess: 1 })
   );
   floorSH.rotation.x = -Math.PI / 2;
   floorSH.position.set(sx, 0.01, sz);
@@ -2864,7 +3533,7 @@ function buildSafehouse() {
   scene.add(signMesh);
 
   // ── CARTEL FLUORESCENTE ALTO (visible desde lejos) ──
-  const poleMat = new THREE.MeshPhongMaterial({ color: 0x333333, shininess: 20 });
+  const poleMat = gfxMat({ color: 0x333333, shininess: 20 });
 
   // Poste principal
   const poleGeo = new THREE.BoxGeometry(0.18, 9.0, 0.18);
@@ -2886,7 +3555,7 @@ function buildSafehouse() {
   scene.add(panelMesh);
 
   // Marco oscuro del cartel
-  const frameMat = new THREE.MeshPhongMaterial({ color: 0x111111 });
+  const frameMat = gfxMat({ color: 0x111111 });
   const frameGeo = new THREE.BoxGeometry(2.8, 1.05, 0.08);
   const frameMesh = new THREE.Mesh(frameGeo, frameMat);
   frameMesh.position.set(sx + 2.1, 9.55, sz + 2.65);
@@ -3101,7 +3770,7 @@ function buildScenario2() {
   const _col = (x,z,w,d) => colliders.push({ minX:x-w/2, maxX:x+w/2, minZ:z-d/2, maxZ:z+d/2 });
 
   // ── Suelo: plaza de piedra con crosswalks ──
-  const plazaMat = new THREE.MeshPhongMaterial({ map: concreteTex(), shininess: 4 });
+  const plazaMat = gfxMat({ map: concreteTex(), shininess: 4 });
   plazaMat.map.repeat.set(8, 8);
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(50, 50), plazaMat);
   floor.rotation.x = -Math.PI/2; floor.receiveShadow = true; scene.add(floor);
@@ -3114,9 +3783,9 @@ function buildScenario2() {
   }
 
   // ── FACHADAS NEOCLÁSICAS SIMÉTRICAS (blancas, tipo francés) ──
-  const facMat = new THREE.MeshPhongMaterial({ map: windowFacadeTex(3, 4, 0.15), shininess: 6, color: 0xe8e2d8 });
+  const facMat = gfxMat({ map: windowFacadeTex(3, 4, 0.15), shininess: 6, color: 0xe8e2d8 });
   facMat.map.repeat.set(1,1);
-  const cornMat = new THREE.MeshPhongMaterial({ color: 0xd8d0c0, shininess: 4 });
+  const cornMat = gfxMat({ color: 0xd8d0c0, shininess: 4 });
   // Ala izquierda de la estación (edificio blanco 3 pisos)
   _b(10, 9, 4, -14, 4.5, -6, facMat); _col(-14, -6, 10, 4);
   _b(10.4, 0.4, 4.4, -14, 9.2, -6, cornMat); // cornisa
@@ -3130,7 +3799,7 @@ function buildScenario2() {
   _b(10.2, 0.25, 4.2, 14, 6.2, -6, cornMat);
 
   // ── GRAN ESTRUCTURA DE FIERRO TRIANGULAR (icónica) ──
-  const ironMat = new THREE.MeshPhongMaterial({ color: 0x1a1c22, shininess: 20, specular: 0x333340 });
+  const ironMat = gfxMat({ color: 0x1a1c22, shininess: 20, specular: 0x333340 });
   const roofDarkMat = new THREE.MeshLambertMaterial({ color: 0x0a0c10 });
 
   // Vigas laterales del arco (paredes internas oscuras)
@@ -3176,7 +3845,7 @@ function buildScenario2() {
   }
 
   // ── TORRE DE RELOJ CENTRAL (arriba de la fachada) ──
-  const clockBaseMat = new THREE.MeshPhongMaterial({ color: 0x1a1c22, shininess: 8 });
+  const clockBaseMat = gfxMat({ color: 0x1a1c22, shininess: 8 });
   _b(2.6, 2.2, 2.6, 0, 15.6, -6, clockBaseMat);
   // esfera del reloj (círculo blanco luminoso)
   const clockMat = new THREE.MeshBasicMaterial({ color: 0xe0d8b0 });
@@ -3230,14 +3899,14 @@ function buildScenario2() {
   }
 
   // ── ESCOMBROS Y COBERTURA (obstáculos gameplay) ──
-  const rubMat = new THREE.MeshPhongMaterial({ map: rubbleTex(), shininess: 1 });
+  const rubMat = gfxMat({ map: rubbleTex(), shininess: 1 });
   rubMat.map.repeat.set(1,1);
   [[-8,5],[9,3],[-6,8],[7,10],[0,7],[-11,2],[11,-2]].forEach(([x,z]) => {
     _b(1.5, 0.9, 1.5, x, 0.45, z, rubMat); _col(x,z,1.5,1.5);
   });
 
   // ── AUTOS ABANDONADOS al frente ──
-  const carMat = new THREE.MeshPhongMaterial({ map: metalBurnTex(), shininess: 6 });
+  const carMat = gfxMat({ map: metalBurnTex(), shininess: 6 });
   carMat.map.repeat.set(2,2);
   [[-10, 9, 0.2],[9, 11, 1.4],[0, 15, 0.05]].forEach(([cx,cz,ry]) => {
     const b = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.75, 4.6), carMat);
@@ -3305,24 +3974,24 @@ function buildScenario3() {
   const _col = (x,z,w,d) => colliders.push({ minX:x-w/2, maxX:x+w/2, minZ:z-d/2, maxZ:z+d/2 });
 
   // ── Suelo: plaza de piedra pulida ──
-  const plazaMat = new THREE.MeshPhongMaterial({ map: concreteTex(), shininess: 30, specular: 0x223344 });
+  const plazaMat = gfxMat({ map: concreteTex(), shininess: 30, specular: 0x223344 });
   plazaMat.map.repeat.set(6, 6);
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), plazaMat);
   floor.rotation.x = -Math.PI/2; floor.receiveShadow = true; scene.add(floor);
 
   // ── ESTANQUE / AGUA CENTRAL ──
-  const waterMat = new THREE.MeshPhongMaterial({ color: 0x1a3a5a, shininess: 90, specular: 0x88aacc, transparent: true, opacity: 0.85 });
+  const waterMat = gfxMat({ color: 0x1a3a5a, shininess: 90, specular: 0x88aacc, transparent: true, opacity: 0.85 });
   const water = new THREE.Mesh(new THREE.PlaneGeometry(14, 10), waterMat);
   water.rotation.x = -Math.PI/2; water.position.set(0, 0.03, 4); scene.add(water);
   // borde del estanque
-  const edgeMat = new THREE.MeshPhongMaterial({ color: 0x505862, shininess: 8 });
+  const edgeMat = gfxMat({ color: 0x505862, shininess: 8 });
   _b(15, 0.4, 0.3, 0, 0.2, 9, edgeMat); _col(0, 9, 15, 0.3);
   _b(15, 0.4, 0.3, 0, 0.2, -1, edgeMat); _col(0, -1, 15, 0.3);
   _b(0.3, 0.4, 10.6, -7.5, 0.2, 4, edgeMat); _col(-7.5, 4, 0.3, 10.6);
   _b(0.3, 0.4, 10.6, 7.5, 0.2, 4, edgeMat); _col(7.5, 4, 0.3, 10.6);
 
   // ── PUENTE PEATONAL ARQUEADO (icónico de la referencia) ──
-  const bridgeMat = new THREE.MeshPhongMaterial({ color: 0x707880, shininess: 15 });
+  const bridgeMat = gfxMat({ color: 0x707880, shininess: 15 });
   // arco del puente (segmentos)
   for (let i = 0; i < 8; i++) {
     const t = i / 7;
@@ -3334,7 +4003,7 @@ function buildScenario3() {
     scene.add(seg);
   }
   // barandas del puente
-  const railMat = new THREE.MeshPhongMaterial({ color: 0xa0a8b0, shininess: 30 });
+  const railMat = gfxMat({ color: 0xa0a8b0, shininess: 30 });
   for (let side = -1; side <= 1; side += 2) {
     for (let i = 0; i < 8; i++) {
       const t = i / 7;
@@ -3354,10 +4023,10 @@ function buildScenario3() {
   }
 
   // ── RASCACIELOS DE VIDRIO REFLECTANTE (Sanhattan) ──
-  const glassMat1 = new THREE.MeshPhongMaterial({ color: 0x2a4a68, shininess: 90, specular: 0x88aacc });
-  const glassMat2 = new THREE.MeshPhongMaterial({ color: 0x1e3a58, shininess: 80, specular: 0x6688aa });
-  const glassMat3 = new THREE.MeshPhongMaterial({ color: 0x3a5a78, shininess: 100, specular: 0xaaccdd });
-  const frameMat = new THREE.MeshPhongMaterial({ color: 0x101418, shininess: 6 });
+  const glassMat1 = gfxMat({ color: 0x2a4a68, shininess: 90, specular: 0x88aacc });
+  const glassMat2 = gfxMat({ color: 0x1e3a58, shininess: 80, specular: 0x6688aa });
+  const glassMat3 = gfxMat({ color: 0x3a5a78, shininess: 100, specular: 0xaaccdd });
+  const frameMat = gfxMat({ color: 0x101418, shininess: 6 });
 
   function buildGlassTower(x, z, w, h, d, gMat) {
     // núcleo de vidrio
@@ -3408,13 +4077,13 @@ function buildScenario3() {
   [[-10, 8],[10, 8],[-6, 10],[6, 10],[-11, -2],[11, -2]].forEach(([x,z]) => addTree(x,z));
 
   // ── BANCAS MODERNAS ──
-  const benchMat = new THREE.MeshPhongMaterial({ color: 0x707880, shininess: 30 });
+  const benchMat = gfxMat({ color: 0x707880, shininess: 30 });
   [[-9, 3],[9, 3],[-4, 12],[4, 12]].forEach(([bx,bz]) => {
     _b(2.2, 0.45, 0.5, bx, 0.22, bz, benchMat); _col(bx,bz,2.2,0.5);
   });
 
   // ── FAROLAS MODERNAS ──
-  const poleMat = new THREE.MeshPhongMaterial({ color: 0x8a9090, shininess: 40 });
+  const poleMat = gfxMat({ color: 0x8a9090, shininess: 40 });
   [[-12, 6],[12, 6],[-12, -6],[12, -6],[0, 14]].forEach(([px,pz]) => {
     _b(0.15, 5, 0.15, px, 2.5, pz, poleMat);
     _b(0.6, 0.15, 0.6, px, 5.05, pz, poleMat);
@@ -3424,7 +4093,7 @@ function buildScenario3() {
   });
 
   // ── AUTOS MODERNOS ──
-  const carMat = new THREE.MeshPhongMaterial({ color: 0x0a0a0e, shininess: 60, specular: 0x333844 });
+  const carMat = gfxMat({ color: 0x0a0a0e, shininess: 60, specular: 0x333844 });
   [[-14, 3, 0.1],[14, -12, 1.5],[-8, 14, 0.2]].forEach(([cx,cz,ry]) => {
     const b = new THREE.Mesh(new THREE.BoxGeometry(2, 0.7, 4.3), carMat);
     b.position.set(cx, 0.4, cz); b.rotation.y = ry; scene.add(b);
@@ -3493,7 +4162,7 @@ function buildScenario4() {
   const _col = (x,z,w,d) => colliders.push({ minX:x-w/2, maxX:x+w/2, minZ:z-d/2, maxZ:z+d/2 });
 
   // ── Suelo: pavimento manchado ──
-  const pavMat = new THREE.MeshPhongMaterial({ map: concreteTex(), shininess: 4 });
+  const pavMat = gfxMat({ map: concreteTex(), shininess: 4 });
   pavMat.map.repeat.set(8, 8);
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(50, 50), pavMat);
   floor.rotation.x = -Math.PI/2; floor.receiveShadow = true; scene.add(floor);
@@ -3505,7 +4174,7 @@ function buildScenario4() {
   const grassR = new THREE.Mesh(new THREE.PlaneGeometry(6, 12), grassMat);
   grassR.rotation.x = -Math.PI/2; grassR.position.set(6, 0.04, 4); scene.add(grassR);
   // Bordes de granito
-  const edgeMat = new THREE.MeshPhongMaterial({ color: 0x2a2620, shininess: 8 });
+  const edgeMat = gfxMat({ color: 0x2a2620, shininess: 8 });
   _b(6.4, 0.25, 0.3, -6, 0.12, -2, edgeMat); _col(-6, -2, 6.4, 0.3);
   _b(6.4, 0.25, 0.3, -6, 0.12, 10, edgeMat); _col(-6, 10, 6.4, 0.3);
   _b(0.3, 0.25, 12, -9, 0.12, 4, edgeMat); _col(-9, 4, 0.3, 12);
@@ -3516,15 +4185,15 @@ function buildScenario4() {
   _b(0.3, 0.25, 12, 9, 0.12, 4, edgeMat); _col(9, 4, 0.3, 12);
 
   // ── PALACIO DE LA MONEDA (fachada blanca larga, al fondo Z=-14) ──
-  const palaceMat = new THREE.MeshPhongMaterial({ color: 0xe8e2d0, shininess: 12, specular: 0x333333 });
-  const palaceDetailMat = new THREE.MeshPhongMaterial({ color: 0xd0c8b0, shininess: 8 });
+  const palaceMat = gfxMat({ color: 0xe8e2d0, shininess: 12, specular: 0x333333 });
+  const palaceDetailMat = gfxMat({ color: 0xd0c8b0, shininess: 8 });
   // Cuerpo principal largo
   _b(28, 7, 2.5, 0, 3.5, -14, palaceMat); _col(0, -14, 28, 2.5);
   // Ático central (piso más alto en el centro)
   _b(11, 3, 2.7, 0, 8.5, -14, palaceMat); _col(0, -14, 11, 2.7);
   // Frontón triangular central (aproximado con box y cono pequeño)
   _b(11, 1.2, 0.4, 0, 10.6, -12.8, palaceDetailMat);
-  const frontonMat = new THREE.MeshPhongMaterial({ color: 0xd8d0b8, shininess: 8 });
+  const frontonMat = gfxMat({ color: 0xd8d0b8, shininess: 8 });
   const fronton = new THREE.Mesh(new THREE.ConeGeometry(5.5, 2.5, 3), frontonMat);
   fronton.position.set(0, 11.8, -12.6); fronton.rotation.y = Math.PI/6; scene.add(fronton);
   // Cornisas horizontales
@@ -3540,7 +4209,7 @@ function buildScenario4() {
   _b(28.3, 0.15, 0.4, 0, 7.85, -12.8, palaceDetailMat);
 
   // Columnas de la fachada central
-  const colMat = new THREE.MeshPhongMaterial({ color: 0xe0d8c4, shininess: 10 });
+  const colMat = gfxMat({ color: 0xe0d8c4, shininess: 10 });
   for (let i = 0; i < 6; i++) {
     const cx = -5 + i * 2;
     const col = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.32, 4.8, 10), colMat);
@@ -3551,7 +4220,7 @@ function buildScenario4() {
     colliders.push({ minX: cx-0.32, maxX: cx+0.32, minZ: -12.92, maxZ: -12.28 });
   }
   // Arco central de entrada (marco oscuro)
-  const arch = new THREE.MeshPhongMaterial({ color: 0x1a1610, shininess: 4 });
+  const arch = gfxMat({ color: 0x1a1610, shininess: 4 });
   _b(2.4, 4.5, 0.2, 0, 2.55, -12.7, arch);
   _b(3.0, 0.4, 0.25, 0, 4.7, -12.7, palaceDetailMat);
   // Ventanas laterales (rectángulos oscuros)
@@ -3571,7 +4240,7 @@ function buildScenario4() {
   }
 
   // ── POSTES DE BANDERAS CHILENAS (icónicas de la ref) ──
-  const poleMat = new THREE.MeshPhongMaterial({ color: 0x8a8880, shininess: 30 });
+  const poleMat = gfxMat({ color: 0x8a8880, shininess: 30 });
   const flagRedMat = new THREE.MeshBasicMaterial({ color: 0xd52b1e, side: THREE.DoubleSide });
   const flagWhiteMat = new THREE.MeshBasicMaterial({ color: 0xf0f0f0, side: THREE.DoubleSide });
   const flagBlueMat = new THREE.MeshBasicMaterial({ color: 0x0039a6, side: THREE.DoubleSide });
@@ -3597,8 +4266,8 @@ function buildScenario4() {
   });
 
   // ── FUENTES A LOS COSTADOS ──
-  const fountainMat = new THREE.MeshPhongMaterial({ color: 0x504840, shininess: 15 });
-  const waterMat = new THREE.MeshPhongMaterial({ color: 0x1a4060, shininess: 80, transparent: true, opacity: 0.7 });
+  const fountainMat = gfxMat({ color: 0x504840, shininess: 15 });
+  const waterMat = gfxMat({ color: 0x1a4060, shininess: 80, transparent: true, opacity: 0.7 });
   [[-12, -6],[12, -6]].forEach(([fx, fz]) => {
     // borde de la fuente
     _b(3.2, 0.6, 3.2, fx, 0.3, fz, fountainMat); _col(fx, fz, 3.2, 3.2);
@@ -3609,14 +4278,14 @@ function buildScenario4() {
   });
 
   // ── EDIFICIOS ALTOS AL FONDO (los que se ven detrás de La Moneda) ──
-  const bgBldMat = new THREE.MeshPhongMaterial({ map: windowFacadeTex(10, 6, 0.4), shininess: 3 });
+  const bgBldMat = gfxMat({ map: windowFacadeTex(10, 6, 0.4), shininess: 3 });
   _b(10, 22, 6, -22, 11, -25, bgBldMat);
   _b(10, 24, 6, -8, 12, -28, bgBldMat);
   _b(10, 22, 6, 8, 11, -28, bgBldMat);
   _b(10, 22, 6, 22, 11, -25, bgBldMat);
 
   // ── AUTOS DAÑADOS ──
-  const carMat = new THREE.MeshPhongMaterial({ map: metalBurnTex(), shininess: 6 });
+  const carMat = gfxMat({ map: metalBurnTex(), shininess: 6 });
   carMat.map.repeat.set(2,2);
   [[-13, 10, 0.1],[13, 10, 0.1],[-16, 3, 1.5]].forEach(([cx,cz,ry]) => {
     const b = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.75, 4.6), carMat);
@@ -3629,7 +4298,7 @@ function buildScenario4() {
   });
 
   // Escombros/cobertura extra
-  const rubMat = new THREE.MeshPhongMaterial({ map: rubbleTex(), shininess: 1 });
+  const rubMat = gfxMat({ map: rubbleTex(), shininess: 1 });
   rubMat.map.repeat.set(1,1);
   [[-14, 12],[14, 12],[0, 14],[-16, -5]].forEach(([x,z]) => {
     _b(1.6, 0.9, 1.6, x, 0.45, z, rubMat); _col(x, z, 1.6, 1.6);
@@ -3708,7 +4377,7 @@ function buildScenario5() {
   floor.rotation.x = -Math.PI/2; floor.receiveShadow = true; scene.add(floor);
 
   // ── CARRETERA DIVIDIDA (asfalto) que cruza el mapa ──
-  const roadMat = new THREE.MeshPhongMaterial({ color: 0x1a1614, shininess: 8 });
+  const roadMat = gfxMat({ color: 0x1a1614, shininess: 8 });
   const road1 = new THREE.Mesh(new THREE.PlaneGeometry(4, 40), roadMat);
   road1.rotation.x = -Math.PI/2; road1.position.set(-2.5, 0.02, 0); scene.add(road1);
   const road2 = new THREE.Mesh(new THREE.PlaneGeometry(4, 40), roadMat);
@@ -3727,11 +4396,11 @@ function buildScenario5() {
   }
 
   // ── CASAS BAJAS DE UN PISO (concentradas al oeste — como la ref) ──
-  const houseMat1 = new THREE.MeshPhongMaterial({ color: 0xa06840, shininess: 3 });
-  const houseMat2 = new THREE.MeshPhongMaterial({ color: 0x805030, shininess: 3 });
-  const houseMat3 = new THREE.MeshPhongMaterial({ color: 0xc08050, shininess: 3 });
-  const roofFlatMat = new THREE.MeshPhongMaterial({ color: 0x503820, shininess: 2 });
-  const roofRedMat = new THREE.MeshPhongMaterial({ color: 0x8a3818, shininess: 2 });
+  const houseMat1 = gfxMat({ color: 0xa06840, shininess: 3 });
+  const houseMat2 = gfxMat({ color: 0x805030, shininess: 3 });
+  const houseMat3 = gfxMat({ color: 0xc08050, shininess: 3 });
+  const roofFlatMat = gfxMat({ color: 0x503820, shininess: 2 });
+  const roofRedMat = gfxMat({ color: 0x8a3818, shininess: 2 });
 
   function addHouse(x, z, w, d, h, m, rMat) {
     _b(w, h, d, x, h/2, z, m); _col(x, z, w, d);
@@ -3778,7 +4447,7 @@ function buildScenario5() {
   });
 
   // ── POSTES DE LUZ Y CABLES (típicos del norte) ──
-  const poleMat = new THREE.MeshPhongMaterial({ color: 0x3a2818, shininess: 5 });
+  const poleMat = gfxMat({ color: 0x3a2818, shininess: 5 });
   const wireMat = new THREE.MeshBasicMaterial({ color: 0x0a0806 });
   const polesZ = [-14, -7, 0, 7, 14];
   polesZ.forEach(pz => {
@@ -3800,7 +4469,7 @@ function buildScenario5() {
   });
 
   // ── VEHÍCULOS ABANDONADOS EN LA CARRETERA ──
-  const carMat = new THREE.MeshPhongMaterial({ map: metalBurnTex(), shininess: 6 });
+  const carMat = gfxMat({ map: metalBurnTex(), shininess: 6 });
   carMat.map.repeat.set(2,2);
   [[-2.5, -10, 0.05],[2.5, 5, 0.05],[-2.5, 12, 0.1]].forEach(([cx,cz,ry]) => {
     const b = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.75, 4.6), carMat);
@@ -3811,7 +4480,7 @@ function buildScenario5() {
   });
 
   // Camión volcado
-  const truckMat = new THREE.MeshPhongMaterial({ map: metalBurnTex(), shininess: 5 });
+  const truckMat = gfxMat({ map: metalBurnTex(), shininess: 5 });
   truckMat.map.repeat.set(3,2);
   _b(2.4, 3.0, 6, 0, 1.5, -12, truckMat); _col(0, -12, 2.4, 6);
 
@@ -3876,13 +4545,13 @@ function buildScenario6() {
   const _col = (x,z,w,d) => colliders.push({ minX:x-w/2, maxX:x+w/2, minZ:z-d/2, maxZ:z+d/2 });
 
   // ── Suelo urbano (pavimento gris agrietado) ──
-  const streetMat = new THREE.MeshPhongMaterial({ map: asphaltTex(), shininess: 6 });
+  const streetMat = gfxMat({ map: asphaltTex(), shininess: 6 });
   streetMat.map.repeat.set(6, 6);
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(50, 50), streetMat);
   floor.rotation.x = -Math.PI/2; floor.receiveShadow = true; scene.add(floor);
 
   // Vereda (piso concreto elevado a los lados)
-  const sideMat = new THREE.MeshPhongMaterial({ map: concreteTex(), shininess: 4 });
+  const sideMat = gfxMat({ map: concreteTex(), shininess: 4 });
   sideMat.map.repeat.set(6, 2);
   _b(50, 0.2, 4, 0, 0.1, -14, sideMat);
   _b(50, 0.2, 4, 0, 0.1, 14, sideMat);
@@ -3896,11 +4565,11 @@ function buildScenario6() {
   }
 
   // ── EDIFICIOS COMERCIALES BAJOS (2-4 pisos, ambos lados) ──
-  const bldMat1 = new THREE.MeshPhongMaterial({ map: windowFacadeTex(3, 5, 0.2), shininess: 3, color: 0xd0c8b8 });
+  const bldMat1 = gfxMat({ map: windowFacadeTex(3, 5, 0.2), shininess: 3, color: 0xd0c8b8 });
   bldMat1.map.repeat.set(1,1);
-  const bldMat2 = new THREE.MeshPhongMaterial({ map: windowFacadeTex(4, 4, 0.25), shininess: 3, color: 0xc0b090 });
+  const bldMat2 = gfxMat({ map: windowFacadeTex(4, 4, 0.25), shininess: 3, color: 0xc0b090 });
   bldMat2.map.repeat.set(1,1);
-  const bldMat3 = new THREE.MeshPhongMaterial({ map: windowFacadeTex(2, 6, 0.3), shininess: 3, color: 0xb08858 });
+  const bldMat3 = gfxMat({ map: windowFacadeTex(2, 6, 0.3), shininess: 3, color: 0xb08858 });
   bldMat3.map.repeat.set(1,1);
 
   // Lado norte (Z = -18 aprox)
@@ -3916,7 +4585,7 @@ function buildScenario6() {
   _b(9, 9, 4, 19, 4.5, 19, bldMat2); _col(19, 19, 9, 4);
 
   // ── LETREROS PUBLICITARIOS grandes en las azoteas ──
-  const signBaseMat = new THREE.MeshPhongMaterial({ color: 0x1a1a20, shininess: 4 });
+  const signBaseMat = gfxMat({ color: 0x1a1a20, shininess: 4 });
   const signColors = [0xff2244, 0xffaa00, 0x00aaff, 0xff6699];
   function addBillboard(x, z, w, h, colorIdx) {
     _b(w, h, 0.2, x, h/2 + 8, z, new THREE.MeshBasicMaterial({ color: signColors[colorIdx] }));
@@ -3932,7 +4601,7 @@ function buildScenario6() {
   addBillboard(19, 20, 5, 2, 3);
 
   // ── EL ICÓNICO POSTE DEL METRO "PLAZA DE PUENTE ALTO" ──
-  const metroPoleMat = new THREE.MeshPhongMaterial({ color: 0x505860, shininess: 30 });
+  const metroPoleMat = gfxMat({ color: 0x505860, shininess: 30 });
   const metroRedMat = new THREE.MeshBasicMaterial({ color: 0xd82520 });
   const metroWhiteMat = new THREE.MeshBasicMaterial({ color: 0xf0f0f0 });
   // Posición central-derecha (visible desde el spawn)
@@ -3954,7 +4623,7 @@ function buildScenario6() {
   _b(0.12, 0.5, 0.05, mpx + 0.08, 6.5, mpz - 0.12, mLetterMat);
 
   // ── POSTES ELÉCTRICOS Y CABLES CRUZANDO ──
-  const poleMat = new THREE.MeshPhongMaterial({ color: 0x282018, shininess: 5 });
+  const poleMat = gfxMat({ color: 0x282018, shininess: 5 });
   const wireMat = new THREE.MeshBasicMaterial({ color: 0x0a0806 });
   const polePositions = [[-16,-8],[-16,8],[-4,-8],[-4,8],[8,-8],[8,8],[16,-8],[16,8]];
   polePositions.forEach(([px, pz]) => {
@@ -3978,7 +4647,7 @@ function buildScenario6() {
   }
 
   // ── SEMÁFOROS ──
-  const semMat = new THREE.MeshPhongMaterial({ color: 0x1a1a1a, shininess: 15 });
+  const semMat = gfxMat({ color: 0x1a1a1a, shininess: 15 });
   const semGreen = new THREE.MeshBasicMaterial({ color: 0x00ff44 });
   const semRed = new THREE.MeshBasicMaterial({ color: 0xff2020 });
   function addSemaforo(x, z) {
@@ -4011,7 +4680,7 @@ function buildScenario6() {
   [[-12,0,4],[12,0,4.5],[-6,-11,3.8],[7,11,4]].forEach(([x,z,h]) => addPalm6(x, z, h));
 
   // ── MICROS/AUTOS ABANDONADOS ──
-  const carMat = new THREE.MeshPhongMaterial({ map: metalBurnTex(), shininess: 6 });
+  const carMat = gfxMat({ map: metalBurnTex(), shininess: 6 });
   carMat.map.repeat.set(2,2);
   [[-2, 4, 0.05],[3, -5, 1.6],[-8, 8, 0.2],[8, -10, 0.05]].forEach(([cx,cz,ry]) => {
     const b = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.75, 4.6), carMat);
@@ -4024,7 +4693,7 @@ function buildScenario6() {
   });
 
   // ── BASURA/ESCOMBROS EN VEREDAS ──
-  const rubMat = new THREE.MeshPhongMaterial({ map: rubbleTex(), shininess: 1 });
+  const rubMat = gfxMat({ map: rubbleTex(), shininess: 1 });
   rubMat.map.repeat.set(1,1);
   [[-10,-13],[6,-13],[13,-13],[-11,13],[3,13]].forEach(([x,z]) => {
     _b(1.2, 0.7, 1.0, x, 0.35, z, rubMat); _col(x, z, 1.2, 1.0);
@@ -4106,7 +4775,7 @@ function buildScenario7() {
   floor.rotation.x = -Math.PI/2; floor.receiveShadow = true; scene.add(floor);
 
   // ── RÍO / LAGO (agua brillante que cruza el fondo) ──
-  const waterMat = new THREE.MeshPhongMaterial({ color: 0x1a5088, shininess: 100, specular: 0x88bbdd, transparent: true, opacity: 0.85 });
+  const waterMat = gfxMat({ color: 0x1a5088, shininess: 100, specular: 0x88bbdd, transparent: true, opacity: 0.85 });
   const river = new THREE.Mesh(new THREE.PlaneGeometry(80, 14), waterMat);
   river.rotation.x = -Math.PI/2; river.position.set(0, 0.05, -22); scene.add(river);
   // borde/orilla
@@ -4115,8 +4784,8 @@ function buildScenario7() {
 
   // ── EL VOLCÁN VILLARRICA (silueta gigante nevada al fondo) ──
   // Cono principal (roca oscura)
-  const volcanoRockMat = new THREE.MeshPhongMaterial({ color: 0x1a1820, shininess: 4 });
-  const volcanoSnowMat = new THREE.MeshPhongMaterial({ color: 0xf0f0f8, shininess: 30, specular: 0xaaaacc });
+  const volcanoRockMat = gfxMat({ color: 0x1a1820, shininess: 4 });
+  const volcanoSnowMat = gfxMat({ color: 0xf0f0f8, shininess: 30, specular: 0xaaaacc });
 
   // Base rocosa del volcán (cono gigante)
   const volcanoBase = new THREE.Mesh(new THREE.ConeGeometry(28, 40, 16), volcanoRockMat);
@@ -4170,10 +4839,10 @@ function buildScenario7() {
   treeSpots.forEach(([x,z,s]) => addAutumnTree(x, z, s));
 
   // ── CASAS DE MADERA (típicas del sur, con tejados inclinados) ──
-  const woodMat1 = new THREE.MeshPhongMaterial({ color: 0x5a3818, shininess: 3 });
-  const woodMat2 = new THREE.MeshPhongMaterial({ color: 0x704820, shininess: 3 });
-  const roofRedMat = new THREE.MeshPhongMaterial({ color: 0x6a2818, shininess: 4 });
-  const roofDarkMat = new THREE.MeshPhongMaterial({ color: 0x2a1a10, shininess: 4 });
+  const woodMat1 = gfxMat({ color: 0x5a3818, shininess: 3 });
+  const woodMat2 = gfxMat({ color: 0x704820, shininess: 3 });
+  const roofRedMat = gfxMat({ color: 0x6a2818, shininess: 4 });
+  const roofDarkMat = gfxMat({ color: 0x2a1a10, shininess: 4 });
 
   function addWoodenCabin(x, z, w, d, h, wm, rm) {
     // cuerpo
@@ -4205,7 +4874,7 @@ function buildScenario7() {
   addWoodenCabin(0, 13, 5, 4, 2.6, woodMat2, roofRedMat);
 
   // ── PEQUEÑOS EDIFICIOS DEL PUEBLO al fondo (tipo condominio al lado del lago) ──
-  const townMat = new THREE.MeshPhongMaterial({ map: windowFacadeTex(3, 4, 0.1), shininess: 4, color: 0xd8d0b0 });
+  const townMat = gfxMat({ map: windowFacadeTex(3, 4, 0.1), shininess: 4, color: 0xd8d0b0 });
   townMat.map.repeat.set(1,1);
   _b(6, 8, 4, -20, 4, -18, townMat);
   _b(5, 6, 4, -13, 3, -18, townMat);
@@ -4215,7 +4884,7 @@ function buildScenario7() {
   _b(5, 6, 4, 22, 3, -18, townMat);
 
   // ── AUTOS ABANDONADOS (menos, es zona rural) ──
-  const carMat = new THREE.MeshPhongMaterial({ map: metalBurnTex(), shininess: 6 });
+  const carMat = gfxMat({ map: metalBurnTex(), shininess: 6 });
   carMat.map.repeat.set(2,2);
   [[-3, 6, 0.3],[5, -4, 1.2]].forEach(([cx,cz,ry]) => {
     const b = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.75, 4.6), carMat);
@@ -4331,8 +5000,8 @@ function createWeaponModel(type) {
 
   } else if (type === 'espada') {
     // Sable ceremonial con colores patrios (azul/blanco/rojo + estrella dorada)
-    const bladeMat = new THREE.MeshPhongMaterial({ color: 0xe8f0ff, shininess: 120, specular: 0xffffff });
-    const goldMat  = new THREE.MeshPhongMaterial({ color: 0xd4a017, shininess: 90, specular: 0xffffcc });
+    const bladeMat = gfxMat({ color: 0xe8f0ff, shininess: 120, specular: 0xffffff });
+    const goldMat  = gfxMat({ color: 0xd4a017, shininess: 90, specular: 0xffffcc });
     const bluePat  = new THREE.MeshLambertMaterial({ color: 0x0033a0 });
     const redPat   = new THREE.MeshLambertMaterial({ color: 0xd52b1e });
     const whitePat = new THREE.MeshLambertMaterial({ color: 0xf2f2f2 });
@@ -5234,11 +5903,11 @@ class MolotovPickup {
     // Botella de vidrio con líquido ámbar
     const glass = new THREE.Mesh(
       new THREE.CylinderGeometry(0.10, 0.10, 0.32, 10),
-      new THREE.MeshPhongMaterial({ color: 0xd48810, shininess: 80, transparent: true, opacity: 0.85 })
+      gfxMat({ color: 0xd48810, shininess: 80, transparent: true, opacity: 0.85 })
     );
     glass.position.y = 0.16; this.mesh.add(glass);
     const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 0.08, 8),
-      new THREE.MeshPhongMaterial({ color: 0xd48810, transparent: true, opacity: 0.85 }));
+      gfxMat({ color: 0xd48810, transparent: true, opacity: 0.85 }));
     neck.position.y = 0.36; this.mesh.add(neck);
     // Mecha
     const wick = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.10, 0.03),
@@ -5288,7 +5957,7 @@ function throwMolotov() {
   const proj = new THREE.Group();
   const bottle = new THREE.Mesh(
     new THREE.CylinderGeometry(0.10, 0.10, 0.32, 10),
-    new THREE.MeshPhongMaterial({ color: 0xd48810, transparent: true, opacity: 0.85 })
+    gfxMat({ color: 0xd48810, transparent: true, opacity: 0.85 })
   );
   proj.add(bottle);
   const flame = new THREE.Mesh(new THREE.SphereGeometry(0.10, 8, 6),
@@ -5325,7 +5994,9 @@ function updateMolotovProjectiles(dt) {
     }
     // Explota al tocar el suelo o al terminar la vida
     if (p.mesh.position.y <= 0.1 || p.life <= 0) {
-      const ex = p.mesh.position.x, ez = p.mesh.position.z;
+      const B = 12.5;
+      const ex = Math.max(-B, Math.min(B, p.mesh.position.x));
+      const ez = Math.max(-B, Math.min(B, p.mesh.position.z));
       scene.remove(p.mesh);
       molotovProjectiles.splice(i, 1);
       spawnFirePool(ex, ez);
@@ -5523,40 +6194,40 @@ function spawnPickups() {
 }
 
 // ── SMOKE PARTICLES ──
-const _smokeM = new THREE.MeshBasicMaterial({
-  color: 0x0e0a07, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide
-});
+const _smokeHot = new THREE.Color(0x5a2408), _smokeCold = new THREE.Color(0x0d0b0a);
 function tickSmoke(dt) {
-  // spawn desde posiciones de fuego
+  // spawn desde los fuegos del escenario activo (gfx.fires)
   if (!gameRunning) return;
-  const firePts = [[-8,2],[9,0],[-1,9],[2,-9],[-5,-13],[13,7],[6,13]];
-  firePts.forEach(([fx,fz], i) => {
+  const rate = gfxQ().smoke;
+  gfx.fires.forEach((f, i) => {
     smokeTimers[i] = (smokeTimers[i] || 0) - dt;
     if (smokeTimers[i] <= 0) {
-      smokeTimers[i] = 0.18 + Math.random()*0.25;
-      const sm = new THREE.Mesh(new THREE.PlaneGeometry(1,1), _smokeM.clone());
-      sm.position.set(fx+(Math.random()-.5)*0.8, 0.8+Math.random()*0.5, fz+(Math.random()-.5)*0.8);
-      sm.rotation.y = Math.random()*Math.PI;
+      smokeTimers[i] = (0.28 + Math.random()*0.30) / rate;
+      const sm = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: gfxSmokeTex(), transparent: true, opacity: 0, depthWrite: false, rotation: Math.random()*6.28
+      }));
+      sm.position.set(f.x+(Math.random()-.5)*0.6, f.y+f.h*0.6, f.z+(Math.random()-.5)*0.6);
       scene.add(sm);
       smokeParticles.push({
-        m: sm, life: 2.5+Math.random()*3, t: 0,
-        vx:(Math.random()-.5)*0.2, vy:0.4+Math.random()*0.6, vz:(Math.random()-.5)*0.2,
-        startS: 0.3+Math.random()*0.4, endS: 1.2+Math.random()*1.0
+        m: sm, life: 3.5+Math.random()*3, t: 0,
+        vx: 0.30+(Math.random()-.5)*0.25, vy: 0.7+Math.random()*0.5, vz: 0.10+(Math.random()-.5)*0.25,
+        startS: 0.6+Math.random()*0.4, endS: 2.8+Math.random()*1.8, rot: (Math.random()-.5)*0.5
       });
     }
   });
-  // actualizar partículas
+  // actualizar partículas (los sprites ya miran a cámara)
   for(let i=smokeParticles.length-1; i>=0; i--) {
     const p = smokeParticles[i];
-    p.t += dt; if(p.t >= p.life){ scene.remove(p.m); smokeParticles.splice(i,1); continue; }
+    p.t += dt;
+    if(p.t >= p.life){ scene.remove(p.m); p.m.material.dispose(); smokeParticles.splice(i,1); continue; }
     const prog = p.t / p.life;
     p.m.position.x += p.vx*dt; p.m.position.y += p.vy*dt; p.m.position.z += p.vz*dt;
-    p.m.rotation.y += dt*0.3;
     const s = p.startS + (p.endS-p.startS)*prog;
-    p.m.scale.set(s,s,s);
-    p.m.material.opacity = 0.55*(1-prog*prog)*Math.min(1,prog*4);
-    // billboarding (siempre mira a cámara)
-    p.m.lookAt(camera.position);
+    p.m.scale.set(s,s,1);
+    p.m.material.rotation += p.rot*dt;
+    p.m.material.opacity = 0.6*(1-prog)*Math.min(1,prog*5);
+    // iluminado por el fuego al nacer, negro al enfriarse
+    p.m.material.color.copy(_smokeHot).lerp(_smokeCold, Math.min(1, prog*3.5));
   }
 }
 
@@ -5566,6 +6237,7 @@ function tickSmoke(dt) {
 function playerHurt(dmg) {
   if (playerInvincible > 0) return;
   health = Math.max(0, health - dmg);
+  gfx.hurt = 1;
   playDamage();
   const f = document.getElementById('hit-flash');
   f.style.background = 'rgba(200,0,0,0.38)';
@@ -5737,7 +6409,11 @@ function beginWave(n) {
 function _randomPickupPos(minR, maxR) {
   const a = Math.random() * Math.PI * 2;
   const r = minR + Math.random() * (maxR - minR);
-  return [camera.position.x + Math.cos(a) * r, camera.position.z + Math.sin(a) * r];
+  const B = 12.0;
+  return [
+    Math.max(-B, Math.min(B, camera.position.x + Math.cos(a) * r)),
+    Math.max(-B, Math.min(B, camera.position.z + Math.sin(a) * r))
+  ];
 }
 
 function spawnMolotovPickupsForWave(n) {
@@ -5751,8 +6427,9 @@ function spawnMolotovPickupsForWave(n) {
 function spawnEspadaPickup() {
   // Colocarla frente al jugador para que la vea al empezar la última oleada
   const forwardX = -Math.sin(yaw), forwardZ = -Math.cos(yaw);
-  const x = camera.position.x + forwardX * 8;
-  const z = camera.position.z + forwardZ * 8;
+  const B = 12.0;
+  const x = Math.max(-B, Math.min(B, camera.position.x + forwardX * 8));
+  const z = Math.max(-B, Math.min(B, camera.position.z + forwardZ * 8));
   meleePickups.push(new MeleePickup('espada', x, z));
 }
 
@@ -6045,7 +6722,7 @@ function gameLoop() {
   frameId = requestAnimationFrame(gameLoop);
 
   const dt = Math.min(clock.getDelta(), 0.05);
-  if (gamePaused) { renderer.render(scene, camera); return; }
+  if (gamePaused) { gfxRender(); return; }
 
   // Shoot cooldown
   if (shootCooldown > 0) shootCooldown = Math.max(0, shootCooldown - dt);
@@ -6077,6 +6754,16 @@ function gameLoop() {
 
   // Flicker lights — parpadeo dramático de película de terror
   flickerLights.forEach(l => {
+    if (l._isFire) {
+      // Fuego: oscilación continua de varias frecuencias + leve vaivén de la llama
+      l._flickerTime += dt;
+      const t = l._flickerTime * l._flickerSpeed;
+      const n = Math.sin(t) * 0.5 + Math.sin(t * 2.31 + 1.3) * 0.3 + Math.sin(t * 5.17 + 0.7) * 0.2;
+      l.intensity = l._baseIntensity * (0.82 + 0.26 * n);
+      l.position.x = l._basePos.x + Math.sin(t * 0.83) * 0.07;
+      l.position.z = l._basePos.z + Math.cos(t * 1.13) * 0.07;
+      return;
+    }
     l._flickerTime += dt * (1 + Math.random() * 2.5);
     const f = Math.abs(Math.sin(l._flickerTime * l._flickerSpeed))
             * (0.5 + 0.5 * Math.abs(Math.sin(l._flickerTime * l._flickerSpeed * 0.43)));
@@ -6201,7 +6888,8 @@ function gameLoop() {
     }
   }
 
-  renderer.render(scene, camera);
+  gfxUpdate(dt);
+  gfxRender();
 }
 
 // ============================================================
@@ -6272,7 +6960,7 @@ function setupInput() {
   window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
+    gfxResize();
   });
 }
 
@@ -6356,6 +7044,7 @@ function startGame() {
   buildMap();
   setupLighting();
   collectFlickerLights();
+  gfxAfterBuild();
   createWeaponModel('pistola');
   const znEl = document.getElementById('zone-name');
   if (znEl) { znEl.textContent = ZONE_DATA[1].name; znEl.style.color = ZONE_DATA[1].color; }
@@ -6449,6 +7138,7 @@ function advanceScenario() {
   buildMap();
   setupLighting();
   collectFlickerLights();
+  gfxAfterBuild();
   createWeaponModel(currentWeapon);
   spawnPickups();
 
@@ -6489,7 +7179,8 @@ function endGame() {
 // ============================================================
 initScene();
 setupInput();
-renderer.render(scene, camera);
+selectGfx(gfxQuality);
+gfxRender();
 </script>
 </body>
 </html>
